@@ -1,0 +1,620 @@
+// CAPTURE — app shell: flow (title → setup → spawn → match → end), fixed-step loop, debug handle.
+import './style.css';
+import './mobile.css';
+import { createGame } from './sim/index';
+import { Game, mulberry32 } from './sim/game';
+import { TICK_MS, type GameEvent, type MapData, type NationSeed, type StructureType } from './sim/types';
+import { generateMap, loadWorldMap } from './map/index';
+import { Renderer } from './render/renderer';
+import { Minimap } from './render/minimap';
+import { rgbCss } from './render/colors';
+import { Actions, type Ctl } from './ui/actions';
+import { ContextMenu } from './ui/context';
+import { Hud } from './ui/hud';
+import { Input } from './ui/input';
+import { MobileUI } from './ui/mobile';
+import { Screens, loadSetup, type MatchConfig } from './ui/screens';
+import { h, toast } from './ui/dom';
+import { clock, fmt, pct, parseHex } from './ui/format';
+
+type Phase = 'title' | 'setup' | 'loading' | 'spawn' | 'match';
+
+const BUILD_KEYS: Record<string, StructureType> = { KeyC: 'city', KeyP: 'port', KeyF: 'fort', KeyB: 'factory', KeyL: 'silo', KeyM: 'sam' };
+
+export interface StartOptions {
+  map?: 'world' | 'proc';
+  seed?: number;
+  spectate?: boolean;
+  /** Spawn tile for the human; omitted = random land tile (seeded). */
+  spawn?: { x: number; y: number } | null;
+  name?: string;
+  color?: number;
+  difficulty?: 'easy' | 'normal' | 'hard';
+  nations?: number;
+  tribes?: number;
+  speed?: number;
+}
+
+class App implements Ctl {
+  game!: Game;
+  readonly renderer: Renderer;
+  readonly screens: Screens;
+  readonly hud: Hud;
+  readonly act: Actions;
+  readonly ctxMenu: ContextMenu;
+  readonly input: Input;
+  readonly minimap: Minimap;
+  readonly mobile: MobileUI;
+  ratio = 0.25;
+  speed = 1;
+  private resumeSpeed = 1;
+  phase: Phase = 'title';
+  private acc = 0;
+  private lastT = 0;
+  private lastAimCheck = 0;
+  private spawnPick: { x: number; y: number } | null = null;
+  private spawnMap: MapData | null = null;
+  private spawnCfg: MatchConfig | null = null;
+  private spawnBar: { setPicked(v: boolean, label?: string): void } | null = null;
+  private worldMap: Promise<MapData> | null = null;
+  private stats = { peakShare: 0, peakTroops: 0, kills: 0, built: 0, nukes: 0, boats: 0, startTick: 0 };
+  private endShown = false;
+  private stepBudgetHit = 0;
+  /** Sim speed requested by a modal-open pause, restored on close. */
+  private modalPaused = false;
+  private titleDrift = 0;
+  private hudEl: HTMLElement;
+
+  constructor(root: HTMLElement) {
+    const canvas = h('canvas', { class: 'view' });
+    root.appendChild(canvas);
+    this.renderer = new Renderer(canvas);
+    this.act = new Actions(this);
+    const hudHost = h('div', { class: 'hud-host' });
+    root.appendChild(hudHost);
+    this.hudEl = hudHost;
+    this.hud = new Hud(this, this.act, hudHost);
+    this.minimap = new Minimap(this.renderer, this.hud.root);
+    this.ctxMenu = new ContextMenu(this, this.act, root);
+    this.screens = new Screens(root);
+    this.input = new Input(this.renderer, {
+      tap: (t, x, y) => this.onTap(t, x, y),
+      context: (t, x, y) => this.onContext(t, x, y),
+      hover: t => this.onHover(t),
+      key: e => this.onKey(e),
+      active: () => (this.phase === 'match' || this.phase === 'spawn') && !this.screens.modalOpen,
+    });
+    this.mobile = new MobileUI(this, { setAim: a => this.setAim(a), phase: () => this.phase });
+    const onResize = () => { this.renderer.resize(); this.minimap.layout(); };
+    window.addEventListener('resize', onResize);
+    new ResizeObserver(onResize).observe(canvas);
+    this.hud.setVisible(false);
+    requestAnimationFrame(this.frame);
+  }
+
+  // ── Ctl ────────────────────────────────────────────────────────────────────
+  me() {
+    const g = this.game;
+    if (!g || !g.humanId) return null;
+    const p = g.players[g.humanId];
+    return p.alive ? p : null;
+  }
+
+  setSpeed(n: number): void {
+    if (this.phase !== 'match') return;
+    if (n > 0) this.resumeSpeed = n;
+    this.speed = n;
+    this.modalPaused = false;
+    this.hud.syncSpeed();
+    document.body.classList.toggle('paused', n === 0);
+  }
+
+  setRatio(r: number): void {
+    this.ratio = Math.max(0.01, Math.min(1, Math.round(r * 100) / 100));
+    this.hud.syncRatio();
+  }
+
+  selectPlayer(id: number): void {
+    this.renderer.selected = id;
+    this.hud.update(performance.now(), true);
+  }
+
+  focusPlayer(id: number): void {
+    const p = this.game?.players[id];
+    if (!p || !p.alive || p.tiles <= 0) return;
+    const cam = this.renderer.cam;
+    const span = Math.sqrt(p.tiles) * 3.2 + 30;
+    const s = Math.max(cam.fitScale(), Math.min(cam.viewW, cam.viewH) / span);
+    cam.centerOn(p.sumX / p.tiles, p.sumY / p.tiles, s);
+    this.selectPlayer(id);
+  }
+
+  jumpTo(x: number, y: number): void {
+    const cam = this.renderer.cam;
+    cam.centerOn(x, y, Math.max(cam.scale, 3));
+    this.renderer.fx.ping(x, y, performance.now());
+  }
+
+  openHelp(): void {
+    this.pauseForModal();
+    this.screens.help(() => { this.screens.closeModal(); this.resumeFromModal(); });
+  }
+
+  openPause(): void {
+    if (this.phase !== 'match') return;
+    this.pauseForModal();
+    this.screens.pause(
+      () => { this.screens.closeModal(); this.resumeFromModal(); },
+      () => this.openHelp(),
+      () => { this.screens.closeModal(); this.newGame(); },
+    );
+  }
+
+  private pauseForModal(): void {
+    if (this.phase === 'match' && this.speed > 0 && !this.modalPaused) {
+      this.resumeSpeed = this.speed;
+      this.speed = 0;
+      this.modalPaused = true;
+      this.hud.syncSpeed();
+    }
+  }
+  private resumeFromModal(): void {
+    if (this.modalPaused) { this.speed = this.resumeSpeed; this.modalPaused = false; this.hud.syncSpeed(); }
+  }
+
+  newGame(): void {
+    this.ctxMenu.close();
+    this.setAim(null);
+    this.screens.closeModal();
+    this.hud.setVisible(false);
+    this.phase = 'setup';
+    document.body.classList.remove('paused', 'in-match');
+    this.showSetup(false);
+  }
+
+  // ── flow ───────────────────────────────────────────────────────────────────
+  async showTitle(): Promise<void> {
+    this.phase = 'title';
+    this.hud.setVisible(false);
+    document.body.classList.add('at-title');
+    try {
+      const map = generateMap(1 + Math.floor(Math.random() * 9999));
+      const bg = new Game(map, 1);
+      this.game = bg;
+      this.renderer.setGame(bg);
+      this.renderer.spawn = null;
+      const cam = this.renderer.cam;
+      cam.centerOn(map.width * 0.35, map.height * 0.5, cam.fitScale() * 1.8, false);
+    } catch (err) { console.warn('title map failed', err); }
+    this.screens.title(() => this.showSetup(false), () => this.showSetup(true), () => this.openHelp());
+  }
+
+  private showSetup(spectate: boolean): void {
+    this.phase = 'setup';
+    document.body.classList.add('at-title');
+    this.screens.setup(cfg => this.afterSetup(cfg), () => this.showTitle(), spectate);
+  }
+
+  private async loadMap(kind: 'world' | 'proc', seed: number): Promise<MapData> {
+    if (kind === 'world') {
+      if (!this.worldMap) this.worldMap = loadWorldMap();
+      try { return await this.worldMap; } catch (e) { this.worldMap = null; throw e; }
+    }
+    await new Promise(r => setTimeout(r, 30)); // let the loading screen paint
+    return generateMap(seed);
+  }
+
+  private async afterSetup(cfg: MatchConfig): Promise<void> {
+    this.phase = 'loading';
+    this.screens.loading(cfg.map === 'world' ? 'Carico il mondo…' : 'Genero i continenti…');
+    let map: MapData;
+    try { map = await this.loadMap(cfg.map, cfg.seed); }
+    catch (err) {
+      console.error(err);
+      toast('Impossibile caricare la mappa', 'danger');
+      this.showSetup(cfg.spectate);
+      return;
+    }
+    if (cfg.spectate) { this.startMatch(map, cfg, null); return; }
+    this.enterSpawn(map, cfg);
+  }
+
+  private nationPreview(map: MapData, max: number): NationSeed[] {
+    const out: NationSeed[] = [];
+    const seeds = [...map.nations].sort((a, b) => b.strength - a.strength);
+    for (const s of seeds) {
+      if (out.length >= max) break;
+      if (out.some(o => (o.x - s.x) ** 2 + (o.y - s.y) ** 2 < 14 * 14)) continue;
+      out.push(s);
+    }
+    return out;
+  }
+
+  private enterSpawn(map: MapData, cfg: MatchConfig): void {
+    this.phase = 'spawn';
+    document.body.classList.remove('at-title');
+    this.spawnMap = map;
+    this.spawnCfg = cfg;
+    this.spawnPick = null;
+    const bare = new Game(map, cfg.seed);
+    this.game = bare;
+    this.renderer.setGame(bare);
+    this.renderer.spawn = { seeds: this.nationPreview(map, cfg.nations), pick: null, color: cfg.color, name: cfg.name };
+    this.spawnBar = this.screens.spawnBar(
+      () => this.confirmSpawn(),
+      () => {
+        const t = this.randomLand(bare, Math.floor(Math.random() * 1e9));
+        if (t >= 0) { this.pickSpawn(t); this.renderer.cam.centerOn(bare.xOf(t), bare.yOf(t), Math.max(this.renderer.cam.scale, this.renderer.cam.fitScale() * 2.5)); }
+      },
+      () => this.showSetup(false),
+    );
+  }
+
+  private randomLand(g: Game, seed: number): number {
+    const rng = mulberry32(seed);
+    for (let k = 0; k < 20000; k++) {
+      const i = Math.floor(rng() * g.N);
+      if (g.isLand(i)) {
+        // avoid tiny islets: require some land around
+        let land = 0;
+        for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
+          const x = g.xOf(i) + dx, y = g.yOf(i) + dy;
+          if (g.inBounds(x, y) && g.isLand(g.idx(x, y))) land++;
+        }
+        if (land >= 40) return i;
+      }
+    }
+    return -1;
+  }
+
+  private pickSpawn(tile: number): void {
+    const g = this.game;
+    if (tile < 0 || !g.isLand(tile)) { toast('Scegli un punto sulla terraferma'); return; }
+    this.spawnPick = { x: g.xOf(tile), y: g.yOf(tile) };
+    if (this.renderer.spawn) this.renderer.spawn.pick = this.spawnPick;
+    const near = this.renderer.spawn?.seeds.find(s => (s.x - this.spawnPick!.x) ** 2 + (s.y - this.spawnPick!.y) ** 2 < 14 * 14);
+    this.spawnBar?.setPicked(true, near ? `Vicino a ${near.name}: prenderai il suo posto.` : 'Ottima scelta. Conferma per iniziare.');
+  }
+
+  private confirmSpawn(): void {
+    if (!this.spawnPick || !this.spawnMap || !this.spawnCfg) return;
+    this.startMatch(this.spawnMap, this.spawnCfg, this.spawnPick);
+  }
+
+  startMatch(map: MapData, cfg: MatchConfig, spawn: { x: number; y: number } | null, speed = 1): Game {
+    this.ctxMenu.close();
+    this.screens.clear();
+    document.body.classList.remove('at-title');
+    const game = createGame(map, {
+      seed: cfg.seed,
+      humanSpawn: spawn,
+      humanName: cfg.name,
+      humanColor: cfg.color,
+      nations: cfg.nations,
+      tribes: cfg.tribes,
+      difficulty: cfg.difficulty,
+    });
+    game.trackChanges = true;
+    game.changed.length = 0;
+    this.game = game;
+    (window as any).game = game;
+    this.renderer.setGame(game);
+    this.renderer.spawn = null;
+    this.minimap.layout();
+    this.phase = 'match';
+    this.acc = 0;
+    this.endShown = false;
+    this.stats = { peakShare: 0, peakTroops: 0, kills: 0, built: 0, nukes: 0, boats: 0, startTick: 0 };
+    this.setAim(null);
+    if (spawn && !game.humanId) toast('Punto di partenza non valido: modalità spettatore', 'danger');
+    const me = game.human;
+    const cam = this.renderer.cam;
+    if (me) cam.centerOn(me.spawnX, me.spawnY, Math.max(cam.fitScale() * 2, Math.min(cam.viewW, cam.viewH) / 150), false);
+    else cam.fit();
+    this.hud.attach(game);
+    this.hud.setVisible(true);
+    game.on(ev => { if (this.game === game) this.onGameEvent(ev); });
+    document.body.classList.add('in-match');
+    this.speed = 1;
+    this.setSpeed(speed);
+    this.hud.addLog(me ? `${me.name}, la tua nazione è nata. Espanditi!` : 'Modalità spettatore: clicca un territorio per seguirlo.', 'good', me?.spawnX, me?.spawnY);
+    return game;
+  }
+
+  /** Scriptable start used by URL params and window.capture.start(). */
+  async start(o: StartOptions = {}): Promise<Game> {
+    const base = loadSetup();
+    const cfg: MatchConfig = {
+      map: o.map ?? 'proc',
+      seed: o.seed ?? 1,
+      name: o.name ?? base.name,
+      color: o.color ?? base.color,
+      difficulty: o.difficulty ?? 'normal',
+      nations: o.nations ?? 88,
+      tribes: o.tribes ?? 150,
+      spectate: !!o.spectate,
+    };
+    this.phase = 'loading';
+    this.screens.loading('Preparo la partita…');
+    const map = await this.loadMap(cfg.map, cfg.seed);
+    let spawn: { x: number; y: number } | null = null;
+    if (!cfg.spectate) {
+      if (o.spawn) spawn = o.spawn;
+      else {
+        const tmp = new Game(map, cfg.seed);
+        const t = this.randomLand(tmp, cfg.seed * 7919 + 13);
+        spawn = t >= 0 ? { x: tmp.xOf(t), y: tmp.yOf(t) } : null;
+      }
+    }
+    return this.startMatch(map, cfg, spawn, o.speed ?? 1);
+  }
+
+  // ── events ─────────────────────────────────────────────────────────────────
+  private onGameEvent(ev: GameEvent): void {
+    const g = this.game, r = this.renderer, now = performance.now();
+    const me = g.humanId;
+    switch (ev.type) {
+      case 'explosion':
+        r.fx.blast(ev.x, ev.y, ev.radius, ev.kind === 'hydrogen', now, r.visible(ev.x, ev.y, 200));
+        break;
+      case 'nukeIntercepted':
+        r.fx.puff(ev.x, ev.y, now);
+        break;
+      case 'boatLanded': {
+        const p = g.players[ev.owner];
+        if (r.visible(g.xOf(ev.tile), g.yOf(ev.tile), 50)) r.fx.splash(g.xOf(ev.tile), g.yOf(ev.tile), now, p ? rgbCss(p.color) : '#fff');
+        break;
+      }
+      case 'structureDestroyed':
+        if (r.cam.scale > 1.5 && r.visible(ev.structure.x, ev.structure.y)) r.fx.puff(ev.structure.x, ev.structure.y, now);
+        break;
+      case 'nukeLaunched':
+        if (ev.unit.owner === me) this.stats.nukes++;
+        else if (me && g.owner[ev.unit.toTile] === me) toast('Missile nucleare in arrivo!', 'danger');
+        break;
+      case 'boatLaunched':
+        if (ev.unit.owner === me) this.stats.boats++;
+        break;
+      case 'structureBuilt':
+        if (ev.structure.owner === me) this.stats.built++;
+        break;
+      case 'playerDied':
+        if (me && ev.by === me) this.stats.kills++;
+        if (me && ev.id === me) setTimeout(() => this.showEnd(false), 600);
+        if (me && ev.id === this.renderer.selected) this.renderer.selected = 0;
+        break;
+      case 'win':
+        setTimeout(() => this.showEnd(true), 900);
+        break;
+    }
+  }
+
+  private showEnd(fromWin: boolean): void {
+    const g = this.game;
+    if (this.phase !== 'match') return;
+    const me = g.humanId ? g.players[g.humanId] : null;
+    const winner = g.winner ? g.players[g.winner] : null;
+    if (this.endShown && !fromWin) return;
+    this.endShown = true;
+    if (me) {
+      this.stats.peakShare = Math.max(this.stats.peakShare, g.share(me.id));
+      this.stats.peakTroops = Math.max(this.stats.peakTroops, me.troops);
+    }
+    this.ctxMenu.close();
+    this.setAim(null);
+    const elapsed = clock(g.tick);
+    let info;
+    if (me && winner && winner.id === me.id) {
+      info = { win: true, title: 'Il mondo è tuo', subtitle: `${me.name} controlla ${pct(g.share(me.id))} delle terre.`, canWatch: false };
+    } else if (me && !me.alive) {
+      info = fromWin && winner
+        ? { win: false, title: `${winner.name} ha vinto`, subtitle: 'La partita è finita.', canWatch: false }
+        : { win: false, title: 'Sconfitta', subtitle: 'La tua nazione è stata cancellata dalla mappa.', canWatch: !g.over };
+    } else if (me && winner) {
+      info = { win: false, title: 'Sconfitta', subtitle: `${winner.name} ha raggiunto l’${Math.round(0.8 * 100)}% delle terre.`, canWatch: false };
+    } else {
+      info = { win: false, title: winner ? `${winner.name} conquista il mondo` : 'Partita finita', subtitle: 'Fine della partita.', canWatch: false };
+    }
+    const stats: [string, string][] = me
+      ? [['Tempo', elapsed], ['Quota massima', pct(this.stats.peakShare)], ['Truppe massime', fmt(this.stats.peakTroops)],
+         ['Nazioni eliminate', String(this.stats.kills)], ['Strutture', String(this.stats.built)], ['Navi / atomiche', `${this.stats.boats} / ${this.stats.nukes}`]]
+      : [['Tempo', elapsed], ['Sopravvissuti', String(g.alivePlayers().length)]];
+    this.pauseForModal();
+    this.screens.end({ ...info, stats }, () => this.newGame(), () => {
+      this.screens.closeModal();
+      this.resumeFromModal();
+      this.hud.root.classList.add('spectator');
+    });
+  }
+
+  // ── input handlers ─────────────────────────────────────────────────────────
+  private setAim(a: Renderer['aim']): void {
+    this.renderer.aim = a;
+    this.renderer.aimReason = null;
+    this.lastAimCheck = 0;
+    document.body.classList.toggle('aiming', !!a);
+  }
+
+  private onTap(tile: number, _x: number, _y: number): void {
+    if (this.phase === 'spawn') { this.pickSpawn(tile); return; }
+    if (this.phase !== 'match') return;
+    if (performance.now() - this.ctxMenu.closedAt < 250) return;
+    if (this.mobile.tap(tile)) return;
+    const aim = this.renderer.aim;
+    if (aim) {
+      if (tile < 0) return;
+      const ok = aim.kind === 'nuke' ? this.act.nuke(aim.nuke, tile) : (this.act.boat(tile), true);
+      if (ok) this.setAim(null);
+      return;
+    }
+    this.act.primary(tile);
+  }
+
+  private onContext(tile: number, x: number, y: number): void {
+    if (this.phase !== 'match') return;
+    if (this.renderer.aim) { this.setAim(null); return; }
+    this.ctxMenu.show(tile, x, y);
+  }
+
+  private onHover(tile: number): void {
+    this.renderer.hoverTile = tile;
+    if (this.phase === 'match') {
+      this.hud.mapHover = tile >= 0 ? this.game.owner[tile] : 0;
+      this.lastAimCheck = 0;
+    }
+  }
+
+  private onKey(e: KeyboardEvent): boolean {
+    if (this.screens.modalOpen) {
+      if (e.key === 'Escape') {
+        this.screens.closeModal();
+        this.resumeFromModal();
+        return true;
+      }
+      return false;
+    }
+    if (this.phase === 'spawn') {
+      if (e.key === 'Enter') { this.confirmSpawn(); return true; }
+      if (e.key === 'Escape') { this.showSetup(false); return true; }
+      return false;
+    }
+    if (this.phase !== 'match') return false;
+    const me = this.me();
+    const cursor = this.input.cursorTile();
+    if (e.key === '?' || (e.shiftKey && (e.code === 'Slash' || e.key === '/'))) { this.openHelp(); return true; }
+    switch (e.code) {
+      case 'Escape':
+        if (this.ctxMenu.open) this.ctxMenu.close();
+        else if (this.renderer.aim) this.setAim(null);
+        else this.openPause();
+        return true;
+      case 'Space':
+        this.setSpeed(this.speed > 0 ? 0 : this.resumeSpeed || 1);
+        return true;
+      case 'Digit1': this.setSpeed(1); return true;
+      case 'Digit2': this.setSpeed(2); return true;
+      case 'Digit4': this.setSpeed(4); return true;
+      case 'KeyQ': this.setRatio(this.ratio - (e.shiftKey ? 0.01 : 0.05)); return true;
+      case 'KeyE': this.setRatio(this.ratio + (e.shiftKey ? 0.01 : 0.05)); return true;
+      case 'KeyT': this.renderer.showLabels = !this.renderer.showLabels; return true;
+      case 'KeyN': case 'KeyH':
+        if (!me) return true;
+        this.setAim({ kind: 'nuke', nuke: e.code === 'KeyN' ? 'atom' : 'hydrogen' });
+        toast(e.code === 'KeyN' ? 'Atomica armata: clicca il bersaglio (Esc annulla)' : 'Bomba H armata: clicca il bersaglio (Esc annulla)', 'info');
+        return true;
+      case 'KeyV':
+        if (!me) return true;
+        this.setAim({ kind: 'boat' });
+        toast('Nave pronta: clicca la costa da invadere (Esc annulla)', 'info');
+        return true;
+    }
+    const bt = BUILD_KEYS[e.code];
+    if (bt) {
+      if (!me) return true;
+      if (cursor < 0) { toast('Punta il cursore sulla mappa'); return true; }
+      this.act.build(bt, cursor);
+      return true;
+    }
+    return false;
+  }
+
+  // ── loop ───────────────────────────────────────────────────────────────────
+  /** Smoothed CPU cost of a frame (sim + render + HUD), ms. */
+  cpuMs = 0;
+  simMs = 0;
+  private lastErr = -1e9;
+  private frame = (now: number) => {
+    requestAnimationFrame(this.frame);
+    const c0 = performance.now();
+    const dt = this.lastT ? Math.min(250, now - this.lastT) : 16;
+    this.lastT = now;
+    this.input.update(dt);
+    const g = this.game;
+    if (this.phase === 'match' && g && !g.over && this.speed > 0) {
+      this.acc += dt * this.speed;
+      const maxSteps = Math.max(2, this.speed * 2);
+      let steps = 0;
+      const t0 = performance.now();
+      while (this.acc >= TICK_MS && steps < maxSteps) {
+        this.renderer.beforeStep();
+        g.step();
+        this.acc -= TICK_MS;
+        steps++;
+        if (performance.now() - t0 > 40) break; // never spiral on slow machines
+      }
+      if (this.acc >= TICK_MS * 2) { this.acc = TICK_MS * 0.5; this.stepBudgetHit++; }
+      if (steps) this.simMs += ((performance.now() - t0) / steps - this.simMs) * 0.1;
+      const me = g.human;
+      if (me && me.alive) {
+        const sh = g.share(me.id);
+        if (sh > this.stats.peakShare) this.stats.peakShare = sh;
+        if (me.troops > this.stats.peakTroops) this.stats.peakTroops = me.troops;
+      }
+    } else if (this.phase === 'title' || this.phase === 'setup' || this.phase === 'loading') {
+      const cam = this.renderer.cam;
+      this.titleDrift += dt;
+      if (g) { cam.x += dt * 0.004; if (cam.x > g.W * 0.7) cam.x = g.W * 0.3; cam.clamp(); }
+    }
+    if (this.phase === 'match' && this.renderer.aim && now - this.lastAimCheck > 150) {
+      this.lastAimCheck = now;
+      this.updateAimReason();
+    }
+    const alpha = this.phase === 'match' ? Math.min(1, this.acc / TICK_MS) : 1;
+    try {
+      this.renderer.render(alpha, now);
+      if (this.phase === 'match' || this.phase === 'spawn') this.minimap.draw(now);
+      if (this.phase === 'match') this.hud.update(now);
+    } catch (err) {
+      if (now - this.lastErr > 5000) { this.lastErr = now; console.error(err); }
+    }
+    this.cpuMs += (performance.now() - c0 - this.cpuMs) * 0.05;
+  };
+
+  perf() {
+    return { fps: Math.round(1000 / this.renderer.frameMs), cpuMs: +this.cpuMs.toFixed(2), simMsPerTick: +this.simMs.toFixed(2), droppedCatchUps: this.stepBudgetHit };
+  }
+
+  private updateAimReason(): void {
+    const g = this.game, aim = this.renderer.aim, me = this.me();
+    const t = this.renderer.hoverTile;
+    if (!aim || !me || t < 0) { this.renderer.aimReason = null; return; }
+    if (aim.kind === 'nuke') {
+      const o = g.owner[t];
+      this.renderer.aimReason = o && g.areAllied(me.id, o) ? 'Bersaglio alleato' : g.q.canNuke(me.id, aim.nuke, t);
+    } else this.renderer.aimReason = g.q.canBoat(me.id, t);
+  }
+}
+
+// ── boot ─────────────────────────────────────────────────────────────────────
+const root = document.getElementById('app')!;
+const app = new App(root);
+
+(window as any).capture = {
+  start: (o: StartOptions) => app.start(o),
+  setSpeed: (n: number) => app.setSpeed(n),
+  get camera() { return app.renderer.cam; },
+  get renderer() { return app.renderer; },
+  perf: () => app.perf(),
+  app,
+};
+
+const params = new URLSearchParams(location.search);
+if (params.get('auto') === '1') {
+  const num = (k: string) => (params.has(k) ? Number(params.get(k)) : undefined);
+  const x = num('x'), y = num('y');
+  const diff = params.get('difficulty') ?? params.get('diff');
+  app.start({
+    map: params.get('map') === 'world' ? 'world' : 'proc',
+    seed: num('seed') ?? 1,
+    spectate: params.get('spectate') === '1',
+    spawn: x !== undefined && y !== undefined ? { x, y } : undefined,
+    name: params.get('name') ?? undefined,
+    color: params.has('color') ? parseHex(params.get('color')!) : undefined,
+    difficulty: diff === 'easy' || diff === 'hard' || diff === 'normal' ? diff : undefined,
+    nations: num('nations'),
+    tribes: num('tribes'),
+    speed: num('speed'),
+  }).catch(err => { console.error(err); app.showTitle(); });
+} else {
+  app.showTitle();
+}

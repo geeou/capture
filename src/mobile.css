@@ -1,0 +1,274 @@
+/* CAPTURE — touch & phone layer. Everything here is scoped to `body.touch-ui` (coarse pointer or ?touch=1)
+   and/or short viewports, so the desktop mouse + keyboard layout is untouched.
+   Colours and fonts only through the skin tokens defined in style.css. */
+
+/* ── desktop-safe defaults for elements that only the touch layer uses ──── */
+.tb-touch, .rt-step, .m-dock, .m-banner, .m-fs-float, .m-rotate { display: none; }
+.lg.old { display: none; }
+
+.m-svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; display: block; flex: none; }
+.m-glyph {
+  display: block; width: 24px; height: 24px; flex: none; background: currentColor;
+  -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+  -webkit-mask-position: center; mask-position: center;
+}
+
+/* ── touch hygiene ───────────────────────────────────────────────────────── */
+html:has(body.touch-ui) { height: 100%; height: 100dvh; overscroll-behavior: none; }
+body.touch-ui {
+  height: 100%; height: 100dvh; overscroll-behavior: none;
+  -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
+  --sa-t: max(6px, env(safe-area-inset-top, 0px));
+  --sa-r: max(6px, env(safe-area-inset-right, 0px));
+  --sa-b: max(6px, env(safe-area-inset-bottom, 0px));
+  --sa-l: max(6px, env(safe-area-inset-left, 0px));
+}
+body.touch-ui #app { height: 100dvh; }
+body.touch-ui button, body.touch-ui .lb-row, body.touch-ui .lg, body.touch-ui .minimap { touch-action: manipulation; }
+body.touch-ui .scr, body.touch-ui .modal-wrap, body.touch-ui .cm-list, body.touch-ui .lb-body, body.touch-ui .log.expanded, body.touch-ui .attacks {
+  touch-action: pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+}
+body.touch-ui input[type=text], body.touch-ui input[type=number] { font-size: 16px; } /* no iOS focus zoom */
+
+/* ── touch controls, any screen size (phones and tablets) ───────────────── */
+body.touch-ui .tb-touch { display: flex; gap: 5px; }
+body.touch-ui .ib { width: 40px; height: 40px; }
+body.touch-ui .ib.on { color: var(--accent); border-color: var(--accent); }
+body.touch-ui .speed .sp { height: 38px; min-width: 40px; }
+body.touch-ui kbd, body.touch-ui .ratio .keys { display: none; }
+
+/* attack-ratio slider with −/+ and a fat thumb */
+body.touch-ui .ratio-row { display: flex; align-items: center; gap: 8px; }
+body.touch-ui .rt-step { display: grid; font-size: 20px; line-height: 1; color: var(--text); flex: none; }
+body.touch-ui .ratio input[type=range] {
+  height: 36px; background-color: transparent;
+  background-image: linear-gradient(90deg, var(--accent) var(--p, 25%), var(--line-hi) var(--p, 25%));
+  background-size: 100% 8px; background-position: center; background-repeat: no-repeat;
+}
+body.touch-ui .ratio input[type=range]::-webkit-slider-thumb { width: 28px; height: 28px; background: var(--text); border-color: var(--accent); }
+body.touch-ui .ratio input[type=range]::-moz-range-thumb { width: 22px; height: 22px; background: var(--text); }
+
+/* bigger rows / buttons */
+body.touch-ui .leaderboard .ph { min-height: 40px; }
+body.touch-ui .lb-row { height: 36px; }
+body.touch-ui .req .btn, body.touch-ui .atk .btn.xs { min-height: 40px; padding: 0 12px; font-size: 12.5px; border-radius: 8px; }
+body.touch-ui .atk { padding-top: 6px; }
+body.touch-ui .lg.jump { min-height: 32px; }
+
+/* context menu: inline build grid, scrolls when taller than the screen (max-height set from JS) */
+body.touch-ui .ctxmenu { display: flex; flex-direction: column; width: 288px; max-width: calc(100vw - var(--sa-l) - var(--sa-r) - 4px); }
+body.touch-ui .cm-head { flex: none; }
+body.touch-ui .cm-list { overflow-y: auto; min-height: 0; }
+body.touch-ui .cm-row { min-height: 44px; }
+body.touch-ui .cm-ic { width: 28px; height: 28px; }
+body.touch-ui .cm-row.sub { flex-wrap: wrap; }
+body.touch-ui .cm-build {
+  position: static; width: auto; flex-basis: 100%; box-shadow: none; border: 0; background: transparent; padding: 6px 0 2px;
+}
+body.touch-ui .cm-row.sub:not(.opened) .cm-build { display: none; }
+body.touch-ui .cm-row.sub.opened .cm-build { display: grid; }
+body.touch-ui .cm-row.sub.opened .cm-arrow { transform: rotate(90deg); }
+body.touch-ui .cm-bt { min-height: 48px; }
+body.touch-ui .cm-row:hover, body.touch-ui .cm-bt:hover { background: transparent; }
+body.touch-ui .cm-row:active { background: var(--panel-hi); }
+
+/* bottom-left dock */
+body.touch-ui .m-dock { display: block; position: absolute; left: var(--sa-l); bottom: var(--sa-b); z-index: 2; }
+body.touch-ui .hud.spectator .m-dock { display: none; }
+.m-dock-row { display: flex; gap: 2px; padding: 4px; }
+.m-db {
+  appearance: none; border: 0; background: transparent; color: var(--dim); cursor: pointer;
+  width: 52px; height: 48px; border-radius: calc(var(--radius) - 3px);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  font: 700 9.5px/1 var(--font); letter-spacing: 0.02em;
+}
+.m-db:active { background: var(--panel-hi); }
+.m-db.on { background: var(--accent); color: var(--accent-ink); }
+.m-db.arm .m-svg { stroke-width: 1.8; }
+.m-tray { position: absolute; left: 0; bottom: calc(100% + 6px); display: flex; gap: 5px; padding: 5px; animation: fadeUp 0.15s ease-out; }
+.m-tray.arms { gap: 6px; }
+.m-tb {
+  appearance: none; cursor: pointer; width: 62px; min-height: 60px; padding: 6px 2px 5px; border-radius: calc(var(--radius) - 3px);
+  border: 1px solid var(--line); background: var(--panel-hi); color: var(--text);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font: 600 10.5px/1.1 var(--font);
+}
+.m-tb:active { border-color: var(--accent); }
+.m-tb.nuke { width: 76px; }
+.m-tb .m-nk { font-size: 20px; line-height: 24px; color: var(--danger); }
+.m-tn { white-space: nowrap; }
+.m-cost { font-size: 10px; font-weight: 700; color: var(--warn); }
+.m-tb.poor .m-cost { color: var(--danger); }
+.m-tb.poor .m-glyph { opacity: 0.55; }
+
+/* placement / aim banner: takes the ratio slider's slot while something is armed */
+body.touch-ui .m-banner:not(.hidden) {
+  display: flex; align-items: center; gap: 8px; position: absolute; z-index: 3;
+  left: 50%; transform: translateX(-50%); bottom: var(--sa-b); width: min(440px, calc(100vw - 24px)); padding: 6px 6px 6px 10px;
+  border-color: var(--accent); animation: fadeUp 0.15s ease-out;
+}
+body.touch-ui .m-banner.nuke { border-color: var(--danger); }
+body.touch-ui.m-armed .ratio { visibility: hidden; }
+.m-bn-ic { color: var(--accent); flex: none; display: grid; place-items: center; width: 28px; }
+.m-banner.nuke .m-bn-ic { color: var(--danger); }
+.m-bn-t { flex: 1; min-width: 0; }
+.m-bn-t b, .m-bn-t small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.m-bn-t b { font-size: 12.5px; }
+.m-bn-t small { font-size: 11px; color: var(--dim); }
+.m-bn-t small.why { color: var(--danger); font-weight: 600; }
+.m-banner .btn { min-height: 40px; padding: 0 12px; flex: none; }
+.m-banner .btn.hidden { display: none; }
+
+/* floating fullscreen toggle on title / setup / spawn screens */
+body.touch-ui:not(.in-match) .m-fs-float { display: grid; position: fixed; z-index: 60; top: var(--sa-t); right: var(--sa-r); background: var(--panel); }
+.m-fs-float.hidden, .tb-fs.hidden { display: none !important; }
+.tb-fs .m-svg, .m-fs-float .m-svg { width: 18px; height: 18px; }
+
+/* rotate overlay */
+body.touch-ui .m-rotate:not(.hidden) {
+  display: flex; position: fixed; inset: 0; z-index: 1000; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 32px; text-align: center; background: var(--bg); color: var(--text); font-family: var(--font);
+}
+.m-rotate b { font: 800 20px/1.2 var(--display); letter-spacing: 0.04em; }
+.m-rotate small { color: var(--dim); font-size: 13px; max-width: 280px; }
+.m-rot-ic { color: var(--accent); animation: m-rot 2.4s ease-in-out infinite; }
+.m-rot-ic .m-svg { width: 56px; height: 56px; stroke-width: 1.6; }
+@keyframes m-rot { 0%, 25% { transform: rotate(0); } 55%, 100% { transform: rotate(-90deg); } }
+body.m-rotate-on .ctxmenu, body.m-rotate-on .toasts { display: none; }
+
+/* help: touch section */
+.m-help h3 { margin-top: 4px; }
+
+/* ── phone landscape layout (short touch screens) ────────────────────────── */
+@media (max-height: 520px), (max-width: 700px) {
+  body.touch-ui { --top-h: calc(var(--sa-t) + 54px); }
+
+  /* top bar: full width between the safe insets */
+  body.touch-ui .topbar {
+    top: var(--sa-t); left: var(--sa-l); right: var(--sa-r); transform: none; max-width: none;
+    flex-wrap: nowrap; justify-content: flex-start; gap: 8px; padding: 3px 4px 3px 10px;
+  }
+  body.touch-ui .brand, body.touch-ui .stat.time, body.touch-ui .stat .rate, body.touch-ui .who { display: none; }
+  body.touch-ui .stats { flex: 1; min-width: 0; gap: 10px; }
+  body.touch-ui .stat.troops { width: auto; flex: 1.3 1 0; min-width: 84px; max-width: 150px; }
+  body.touch-ui .stat.gold { width: auto; flex: 0.9 1 0; min-width: 58px; max-width: 110px; }
+  body.touch-ui .stat.land { width: auto; flex: 1 1 0; min-width: 70px; max-width: 140px; }
+  body.touch-ui .stat .lbl { font-size: 8.5px; }
+  body.touch-ui .stat .val b { font-size: 14px; }
+  body.touch-ui .stat .val .dim { font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+  body.touch-ui .speed { flex: none; }
+  body.touch-ui .menu-btns .ib:first-child { display: none; } /* help lives in the ☰ menu */
+  body.touch-ui.paused .hud::after { top: var(--top-h); padding: 5px 10px 5px 13px; font-size: 11px; }
+
+  /* right column: leaderboard (collapsed by default) + selected player's card */
+  body.touch-ui .side {
+    top: var(--top-h); bottom: auto; right: var(--sa-r); width: 220px; gap: 6px;
+    max-height: calc(100dvh - var(--top-h) - var(--sa-b) - 96px);
+  }
+  body.touch-ui .leaderboard .ph { padding: 0 12px; }
+  body.touch-ui .lb-cols, body.touch-ui .lb-row { grid-template-columns: 16px 10px 1fr 40px 44px; gap: 5px; }
+  body.touch-ui .pcard { display: block; padding: 8px 10px; font-size: 12px; cursor: pointer; overflow-y: auto; min-height: 0; flex: 0 1 auto; }
+  body.touch-ui .pcard.hidden { display: none !important; }
+  body.touch-ui .pc-head { margin-bottom: 4px; }
+  body.touch-ui .kv { padding: 2px 0; }
+
+  /* left column: attacks under the top bar */
+  body.touch-ui .attacks {
+    top: var(--top-h); left: var(--sa-l); width: 236px; overflow-y: auto;
+    max-height: calc(100dvh - var(--top-h) - var(--sa-b) - 124px);
+  }
+  body.touch-ui .requests { top: var(--top-h); max-width: calc(100vw - var(--sa-l) - var(--sa-r) - 480px); min-width: 280px; }
+  body.touch-ui.paused .requests { top: calc(var(--top-h) + 30px); }
+  body.touch-ui .req { padding: 5px 5px 5px 10px; gap: 6px; }
+
+  /* event log: last two lines above the dock; "Eventi" expands the history */
+  body.touch-ui .log {
+    display: flex; left: var(--sa-l); bottom: calc(var(--sa-b) + 64px); width: min(300px, 42vw); gap: 2px;
+  }
+  body.touch-ui .log:not(.expanded) .lg:nth-last-child(n+3) { display: none; }
+  body.touch-ui .lg { font-size: 11px; padding: 4px 8px; }
+  body.touch-ui .log.expanded {
+    pointer-events: auto !important; overflow-y: auto; padding: 4px;
+    max-height: calc(100dvh - var(--top-h) - var(--sa-b) - 72px);
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); z-index: 4;
+  }
+  body.touch-ui .log.expanded .lg { display: flex !important; opacity: 1 !important; animation: none; }
+
+  /* bottom centre: ratio slider between dock and minimap */
+  body.touch-ui .ratio {
+    left: calc(var(--sa-l) + 228px); right: calc(var(--sa-r) + 158px); width: auto; max-width: 380px; transform: none;
+    bottom: var(--sa-b); padding: 4px 6px 2px 10px;
+  }
+  body.touch-ui .ratio-head { margin-bottom: 0; gap: 6px; }
+  body.touch-ui .ratio-val b { font-size: 13px; }
+  body.touch-ui .ratio-val span { font-size: 11px; }
+  body.touch-ui .m-banner:not(.hidden) {
+    left: calc(var(--sa-l) + 228px); right: calc(var(--sa-r) + 158px); width: auto; max-width: none; transform: none;
+  }
+
+  /* minimap: smaller, bottom-right inside the safe area */
+  body.touch-ui .minimap { width: 150px !important; height: auto !important; right: var(--sa-r); bottom: var(--sa-b); }
+
+  body.touch-ui .toasts { bottom: calc(var(--sa-b) + 70px); max-width: calc(100vw - 40px); }
+  body.touch-ui .toast { font-size: 12px; padding: 6px 12px; text-align: center; }
+}
+/* very narrow landscape (iPhone SE 667): squeeze the dock labels and the banner buttons */
+@media (max-width: 720px) {
+  body.touch-ui .m-db { width: 48px; }
+  body.touch-ui .ratio, body.touch-ui .m-banner:not(.hidden) { left: calc(var(--sa-l) + 212px); right: calc(var(--sa-r) + 156px); }
+  body.touch-ui .m-banner .btn { padding: 0 9px; }
+  body.touch-ui .ratio-head .lbl { display: none; }
+  body.touch-ui .ratio-val { text-align: left; }
+}
+
+/* ── full-screen flows on short screens (title, setup, spawn, modals) ────── */
+@media (max-height: 520px) {
+  .scr.title, .scr.setup { display: flex; place-items: initial; align-items: flex-start; justify-content: center; }
+  .title-box { margin: auto; padding: 10px 16px; }
+  .logo { font-size: clamp(44px, 17vh, 96px); }
+  .tag { margin: 6px 0 14px; font-size: 14px; }
+  .title-actions { flex-direction: row; flex-wrap: wrap; justify-content: center; gap: 8px; }
+  .title-actions .btn { min-width: 0; min-height: 44px; }
+  .foot { margin-top: 12px; }
+
+  .setup-card {
+    margin: auto; width: min(780px, calc(100vw - 24px)); padding: 10px 16px 12px;
+    display: grid; grid-template-columns: 1fr 1fr; column-gap: 22px; align-items: start;
+  }
+  .setup-card > .setup-head, .setup-card > .setup-foot { grid-column: 1 / -1; }
+  .setup-card > .grp { border-top: 0; padding: 6px 0; }
+  .setup-head { margin: 0 0 4px -8px; }
+  .setup-head h2 { font-size: 19px; }
+  .row { grid-template-columns: 78px 1fr; gap: 8px; }
+  .row.two > div { grid-template-columns: 78px 1fr; gap: 8px; }
+  .mc-art { height: 30px; }
+  .setup-foot { padding-top: 8px; }
+  .setup-card input[type=text], .setup-card input[type=number] { min-height: 40px; }
+  .seg button { min-height: 36px; }
+
+  .spawnbar { bottom: max(8px, env(safe-area-inset-bottom, 0px)); padding: 6px 8px; gap: 8px; }
+  .spawnbar .btn { min-height: 40px; }
+  .sb-text b { font-size: 13px; }
+  .sb-info { font-size: 11px; }
+
+  .modal-wrap { display: flex; place-items: initial; padding: 10px max(10px, env(safe-area-inset-right, 0px)) 10px max(10px, env(safe-area-inset-left, 0px)); }
+  .modal-wrap > .modal { margin: auto; max-width: 100%; }
+  .modal { padding: 14px 16px; }
+  .modal h2 { font-size: 20px; margin-bottom: 8px; }
+  .pause { gap: 7px; }
+  .pause .btn.big { padding: 9px 18px; }
+  .help h3 { margin: 10px 0 6px; }
+  .help .lead { font-size: 13px; }
+  .hl { padding: 3px 0; }
+  .help-foot { margin-top: 10px; }
+  .endcard { padding: 16px 18px; }
+  .endcard h2 { font-size: 28px; margin: 8px 0 4px; }
+  .endcard .lead { margin-bottom: 10px; }
+  .end-stats { gap: 6px; margin-bottom: 12px; }
+  .end-stats div { padding: 6px; }
+  .end-stats b { font-size: 16px; }
+}
+@media (max-height: 520px) and (pointer: coarse) {
+  .setup-card .swc { width: 34px; height: 34px; }
+  .modal .btn, .setup-card .btn, .title-actions .btn { min-height: 44px; }
+}

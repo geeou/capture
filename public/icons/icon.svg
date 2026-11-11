@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="62%"><stop offset="0" stop-color="#0a3520"/><stop offset="1" stop-color="#010604"/></radialGradient>
+    <linearGradient id="sw" x1="256" y1="256" x2="400" y2="112" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#62f59d" stop-opacity=".55"/><stop offset="1" stop-color="#62f59d" stop-opacity="0"/></linearGradient>
+    <filter id="gl" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <g transform="translate(256 256) scale(1.12) translate(-256 -256)">
+    <g fill="none" stroke="#2bd673" stroke-width="3" opacity=".42">
+      <circle cx="256" cy="256" r="76"/><circle cx="256" cy="256" r="138"/><circle cx="256" cy="256" r="200"/>
+      <path d="M256 40V472M40 256H472"/>
+    </g>
+    <path d="M256 256 L456 256 A200 200 0 0 0 397.4 114.6 Z" fill="url(#sw)"/>
+    <g filter="url(#gl)">
+      <path d="M176 176h48v-24h72v24h40v32h32v64h-24v40h-40v32h-56v24h-48v-40h-40v-48h-24v-56h40z" fill="#0f7a44" fill-opacity=".55" stroke="#62f59d" stroke-width="9" stroke-linejoin="miter"/>
+      <path d="M232 240h48v48h-48z" fill="#d9ffe8"/>
+    </g>
+    <path d="M397 115l16-16" stroke="#ffb23e" stroke-width="8" stroke-linecap="square"/>
+    <circle cx="420" cy="92" r="11" fill="#ffb23e"/>
+  </g>
+</svg>
