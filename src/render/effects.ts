@@ -22,8 +22,11 @@ export class Effects {
   private shakeT0 = 0;
   /** Colours of the active skin. */
   theme: FxTheme = getSkin().fx;
+  /** Advanced mode (fog): returns true for world points the human cannot see; their effects are dropped. */
+  hidden: ((x: number, y: number) => boolean) | null = null;
 
   blast(x: number, y: number, radius: number, hydrogen: boolean, now: number, onScreen: boolean): void {
+    if (this.hidden && this.hidden(x, y)) return;
     this.list.push({ kind: 'blast', x, y, r: radius, t0: now, dur: hydrogen ? 2200 : 1600, color: '', big: hydrogen });
     if (onScreen) {
       this.shakeAmp = Math.max(this.shakeAmp * this.shakeDecay(now), hydrogen ? 14 : 8);
@@ -31,9 +34,11 @@ export class Effects {
     }
   }
   puff(x: number, y: number, now: number): void {
+    if (this.hidden && this.hidden(x, y)) return;
     this.list.push({ kind: 'puff', x, y, r: 5, t0: now, dur: 900, color: this.theme.puff });
   }
   splash(x: number, y: number, now: number, color: string): void {
+    if (this.hidden && this.hidden(x, y)) return;
     this.list.push({ kind: 'splash', x, y, r: 4, t0: now, dur: 900, color });
   }
   /** Attention ping (e.g. jump-to from the log). */

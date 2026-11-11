@@ -8,6 +8,8 @@ import { fmt } from './format';
 import type { Actions, Ctl } from './actions';
 import type { Hud } from './hud';
 import type { Input } from './input';
+import { aimOf, warshipsOf, type AdvActions, type AdvHud } from './adv';
+import { ADV } from '../sim/adv/rules';
 
 export interface MobileApp extends Ctl {
   readonly act: Actions;
@@ -15,6 +17,8 @@ export interface MobileApp extends Ctl {
   readonly input: Input;
   readonly ctxMenu: { open: boolean; close(): void };
   readonly screens: { modalOpen: boolean };
+  readonly advHud: AdvHud;
+  readonly aa: AdvActions;
 }
 
 export interface MobileHooks {
@@ -43,6 +47,7 @@ const ICON = {
   log: 'M5 6h14M5 11h14M5 16h9',
   fsIn: 'M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5',
   fsOut: 'M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5',
+  cmd: 'M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.4 6.8 19.1l1-5.8L3.5 9.2l5.9-.9z',
   phone: 'M7 2h10a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zM11 19h2',
 };
 
@@ -88,7 +93,7 @@ export class MobileUI {
   private trayEl: HTMLElement;
   private buildBtns = new Map<StructureType, { el: HTMLElement; cost: HTMLElement }>();
   private nukeBtns = new Map<NukeKind, { el: HTMLElement; cost: HTMLElement }>();
-  private dockBtn: Record<'build' | 'arms' | 'boat' | 'log', HTMLButtonElement>;
+  private dockBtn: Record<'build' | 'arms' | 'boat' | 'log' | 'cmd', HTMLButtonElement>;
   private banner: HTMLElement;
   private bnIcon = h('span', { class: 'm-bn-ic' });
   private bnTitle = h('b');
@@ -118,6 +123,8 @@ export class MobileUI {
       arms: dbtn('arm', 'Armi', ICON.arms, () => this.toggleTray('arms')),
       boat: dbtn('nav', 'Nave', ICON.boat, () => this.armBoat()),
       log: dbtn('evt', 'Eventi', ICON.log, () => { this.app.hud.setLogExpanded(!this.app.hud.logExpanded); this.sync(); }),
+      // advanced matches only (hidden by CSS otherwise): opens the command sheet
+      cmd: dbtn('cmd', 'Comando', ICON.cmd, () => { this.closeTray(); this.app.advHud.setSheet(!this.app.advHud.sheetOpen); this.sync(); }),
     };
     this.trayEl = h('div', { class: 'm-tray panel hidden' });
     for (const t of STRUCTURE_TYPES) {
@@ -134,7 +141,7 @@ export class MobileUI {
     }
     this.dock = h('div', { class: 'm-dock' },
       this.trayEl,
-      h('div', { class: 'm-dock-row panel' }, this.dockBtn.build, this.dockBtn.arms, this.dockBtn.boat, this.dockBtn.log));
+      h('div', { class: 'm-dock-row panel' }, this.dockBtn.build, this.dockBtn.arms, this.dockBtn.boat, this.dockBtn.cmd, this.dockBtn.log));
     app.hud.root.appendChild(this.dock);
 
     // ── placement / aim banner (replaces the ratio slider while armed) ─────
@@ -295,6 +302,9 @@ export class MobileUI {
     this.dockBtn.arms.classList.toggle('on', this.tray === 'arms' || r.aim?.kind === 'nuke');
     this.dockBtn.boat.classList.toggle('on', r.aim?.kind === 'boat');
     this.dockBtn.log.classList.toggle('on', this.app.hud.logExpanded);
+    const ah = this.app.advHud;
+    this.dockBtn.cmd.classList.toggle('on', ah.sheetOpen);
+    this.dockBtn.cmd.classList.toggle('attn', !ah.sheetOpen && (ah.attention || (!!g?.adv && !!me && g.adv.players[me.id].cutTiles > 0)));
     this.namesBtn.classList.toggle('on', r.showLabels);
 
     if (live && this.tray) {
@@ -321,6 +331,18 @@ export class MobileUI {
       title = `Nave pronta · ${fmt(this.app.act.troops())} truppe`;
       text = 'Tocca la costa da invadere';
       ic = 'boat';
+    } else if (live && g.adv && aimOf(r)?.kind === 'fleet') {
+      const cap = g.adv.q.fleetCap(me!.id);
+      title = `Flotta · ${warshipsOf(g, me!.id)}/${isFinite(cap) ? cap : 0} navi da guerra`;
+      const t = r.hoverTile;
+      const why = t >= 0 ? (g.isLand(t) ? null : g.adv.q.canSendFleet(me!.id, t)) : null;
+      text = why ?? 'Tocca il mare dove pattugliare';
+      bad = !!why;
+      ic = 'boat';
+    } else if (live && g.adv && aimOf(r)?.kind === 'capital') {
+      title = `Sposta la capitale · ${fmt(ADV.capitalMoveCost)} oro`;
+      text = 'Tocca una tua città';
+      ic = 'cmd';
     } else if (live && r.aim?.kind === 'nuke') {
       const k = r.aim.nuke;
       const c = g.q.nukeCost(me!.id, k);
@@ -345,7 +367,7 @@ export class MobileUI {
         setText(this.bnTitle, title);
         setText(this.bnText, text);
         this.bnText.classList.toggle('why', bad);
-        this.bnIcon.replaceChildren(ic === 'build' && this.placing ? glyph(this.placing) : icon(ic === 'boat' ? ICON.boat : ICON.arms));
+        this.bnIcon.replaceChildren(ic === 'build' && this.placing ? glyph(this.placing) : icon(ic === 'boat' ? ICON.boat : ic === 'cmd' ? ICON.cmd : ICON.arms));
         this.banner.classList.toggle('nuke', ic === 'nuke');
         this.bnFire.classList.toggle('hidden', !fire);
         this.bnFire.disabled = !fireOk;
@@ -416,7 +438,9 @@ export class MobileUI {
         line('Trascina', 'Sposta la mappa. Due dita: zoom.'),
         line('Costruisci', 'Scegli la struttura, poi tocca un tuo territorio.'),
         line('Armi', 'Arma la bomba, tocca il bersaglio, poi Lancia.'),
-        line('− / +', 'Forza d’attacco (in basso).')));
+        line('− / +', 'Forza d’attacco (in basso).'),
+        line('Comando', 'Partita avanzata: postura, lavoratori, capitale, dottrine, flotta, patti e obiettivi.'),
+        line('Mirato', 'Partita avanzata: il tocco attacca un punto; tocca il pulsante sopra la forza per il fronte intero.')));
     };
     new MutationObserver(muts => {
       for (const m of muts) for (const n of m.addedNodes) {

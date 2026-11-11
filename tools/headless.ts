@@ -1,4 +1,4 @@
-// Headless bot-only match:  npx tsx tools/headless.ts [ticks=3000] [map=test|world|proc] [seed=1]
+// Headless bot-only match:  npx tsx tools/headless.ts [ticks=3000] [map=test|world|proc] [seed=1] [adv] [scenario]
 // Prints a leaderboard every 500 ticks plus ms/tick. Use it to test and balance sim systems.
 import { createGame } from '../src/sim/index';
 import { testMap } from '../src/sim/testmap';
@@ -7,9 +7,11 @@ import { generateMap, loadWorldMap } from '../src/map/index';
 const ticks = Number(process.argv[2] ?? 3000);
 const which = process.argv[3] ?? 'test';
 const seed = Number(process.argv[4] ?? 1);
+const advanced = process.argv[5] === 'adv';
+const scenario = (process.argv[6] ?? 'libero') as 'libero' | '1939' | 'guerrafredda';
 
 const map = which === 'world' ? await loadWorldMap() : which === 'proc' ? generateMap(seed) : testMap(seed);
-const game = createGame(map, { seed, humanSpawn: null, tribes: which === 'test' ? 30 : 150 });
+const game = createGame(map, { seed, humanSpawn: null, tribes: which === 'test' ? 30 : 150, advanced, scenario });
 const counts: Record<string, number> = {};
 game.on(ev => { counts[ev.type] = (counts[ev.type] ?? 0) + 1; });
 

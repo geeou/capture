@@ -1,5 +1,6 @@
 // Full-screen flows: title, setup, loading, spawn bar, pause, help, end of match.
 import type { Difficulty } from '../sim/types';
+import type { ScenarioId } from '../sim/adv/types';
 import { h } from './dom';
 import { hexColor, parseHex } from './format';
 import { STRUCTURE_KEY, STRUCTURE_LABEL, glyphURL } from '../render/icons';
@@ -16,22 +17,40 @@ export interface MatchConfig {
   spectate: boolean;
   /** Graphic skin. */
   skin?: SkinId;
+  /** Advanced mode (docs/ADVANCED.md). Set by the title entry, not persisted. */
+  advanced?: boolean;
+  /** Advanced only: scenario (1939 / guerrafredda need the world map). */
+  scenario?: ScenarioId;
+  /** Advanced only: fog of war for the human. */
+  fog?: boolean;
 }
+
+const SCENARIOS: [ScenarioId, string, string][] = [
+  ['libero', 'Libero', 'Partenza classica: tutti alla pari.'],
+  ['1939', '1939', 'Blocchi, alleanze e guerre del 1939.'],
+  ['guerrafredda', 'Guerra fredda', 'Due blocchi armati di atomiche.'],
+];
 
 export const PLAYER_COLORS = [0x2f7bff, 0xff4f5e, 0x22c58b, 0xffb020, 0xa860ff, 0xff7a2f, 0x18c3d6, 0xf2f2f2];
 
 const STORE_KEY = 'capture.setup.v1';
 
 export function loadSetup(): MatchConfig {
-  const def: MatchConfig = { map: 'world', seed: 1 + Math.floor(Math.random() * 99999), name: 'Comandante', color: PLAYER_COLORS[0], difficulty: 'normal', nations: 88, tribes: 150, spectate: false };
+  const def: MatchConfig = { map: 'world', seed: 1 + Math.floor(Math.random() * 99999), name: 'Comandante', color: PLAYER_COLORS[0], difficulty: 'normal', nations: 88, tribes: 150, spectate: false, scenario: 'libero', fog: true };
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) { const o = { ...def, ...JSON.parse(raw), spectate: false }; if (!isSkinId(o.skin)) o.skin = skinId(); return o; }
+    if (raw) {
+      const o = { ...def, ...JSON.parse(raw), spectate: false, advanced: false };
+      if (!isSkinId(o.skin)) o.skin = skinId();
+      if (!SCENARIOS.some(([id]) => id === o.scenario)) o.scenario = 'libero';
+      if (typeof o.fog !== 'boolean') o.fog = true;
+      return o;
+    }
   } catch { /* storage unavailable */ }
   return def;
 }
 function saveSetup(c: MatchConfig): void {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(c)); } catch { /* ignore */ }
+  try { const { advanced: _a, ...rest } = c; localStorage.setItem(STORE_KEY, JSON.stringify(rest)); } catch { /* ignore */ }
 }
 
 export interface EndInfo {
@@ -80,22 +99,25 @@ export class Screens {
   }
 
   // ── title ──────────────────────────────────────────────────────────────────
-  title(onPlay: () => void, onWatch: () => void, onHelp: () => void): void {
+  title(onPlay: () => void, onPlayAdv: () => void, onWatch: () => void, onHelp: () => void): void {
     this.set(h('div', { class: 'scr title' },
       h('div', { class: 'title-box' },
         h('div', { class: 'logo' }, 'CAPTURE'),
         h('p', { class: 'tag' }, 'Conquista il mondo, una casella alla volta.'),
         h('div', { class: 'title-actions' },
-          h('button', { class: 'btn primary big', onclick: onPlay }, 'Gioca'),
+          h('button', { class: 'btn primary big', onclick: onPlay }, 'Partita normale'),
+          h('button', { class: 'btn big adv-play', onclick: onPlayAdv, title: 'Fronti, capitali, rifornimenti, risorse, flotte, dottrine, patti, scenari e nebbia di guerra' },
+            'Partita avanzata', h('small', null, 'Fronti · rifornimenti · dottrine · nebbia')),
           h('button', { class: 'btn big ghost', onclick: onWatch }, 'Guarda una partita'),
           h('button', { class: 'btn big ghost', onclick: onHelp }, 'Come si gioca')),
         h('p', { class: 'foot' }, 'Possiedi l’80% delle terre per vincere · ~240 avversari'))));
   }
 
   // ── setup ──────────────────────────────────────────────────────────────────
-  setup(onStart: (c: MatchConfig) => void, onBack: () => void, spectate = false): void {
+  setup(onStart: (c: MatchConfig) => void, onBack: () => void, spectate = false, advanced = false): void {
     const cfg = loadSetup();
     cfg.spectate = spectate;
+    cfg.advanced = advanced;
     const seg = <T extends string>(opts: [T, string][], get: () => T, setv: (v: T) => void) => {
       const wrap = h('div', { class: 'seg' });
       const paint = () => [...wrap.children].forEach((b, k) => b.classList.toggle('on', opts[k][0] === get()));
@@ -140,8 +162,32 @@ export class Screens {
         h('span', null, SKIN_INFO[id].name)));
     }
     paintSkin();
+    // advanced-only options: scenario + fog of war
+    const fogIn = h('input', { type: 'checkbox', checked: cfg.fog !== false }) as HTMLInputElement;
+    const scenSeg = h('div', { class: 'seg scen' });
+    const scenHint = h('small', { class: 'scen-hint' });
+    const effScenario = (): ScenarioId => (cfg.map === 'world' ? cfg.scenario ?? 'libero' : 'libero');
+    for (const [id, label] of SCENARIOS) {
+      scenSeg.appendChild(h('button', { type: 'button', onclick: () => { cfg.scenario = id; refresh(); } }, label));
+    }
+    const fogRow = h('label', { class: 'check' }, fogIn, h('span', null, 'Nebbia di guerra (vedi solo vicino ai tuoi confini)'));
+    const advGrp = advanced ? h('div', { class: 'grp adv-grp' },
+      h('div', { class: 'row' }, h('label', null, 'Scenario'), h('div', { class: 'scen-wrap' }, scenSeg, scenHint)),
+      fogRow) : null;
     const refresh = () => {
       seedRow.classList.toggle('hidden', cfg.map !== 'proc');
+      if (advGrp) {
+        const eff = effScenario();
+        [...scenSeg.children].forEach((b, k) => {
+          const id = SCENARIOS[k][0];
+          (b as HTMLButtonElement).disabled = id !== 'libero' && cfg.map !== 'world';
+          b.classList.toggle('on', id === eff);
+          (b as HTMLButtonElement).title = (b as HTMLButtonElement).disabled ? 'Solo con il mondo reale' : SCENARIOS[k][2];
+        });
+        const info = SCENARIOS.find(([id]) => id === eff)!;
+        scenHint.textContent = cfg.map !== 'world' ? `${info[2]} 1939 e Guerra fredda solo con il mondo reale.` : info[2];
+        fogRow.classList.toggle('hidden', specIn.checked);
+      }
       humanRows.classList.toggle('hidden', specIn.checked);
       startBtn.textContent = specIn.checked ? 'Avvia (spettatore)' : 'Scegli il punto di partenza';
     };
@@ -154,10 +200,11 @@ export class Screens {
       cfg.nations = Math.max(0, Math.min(200, Math.floor(Number(natIn.value) || 0)));
       cfg.tribes = Math.max(0, Math.min(400, Math.floor(Number(triIn.value) || 0)));
       cfg.spectate = specIn.checked;
+      cfg.fog = fogIn.checked;
       saveSetup(cfg);
-      onStart({ ...cfg });
+      onStart({ ...cfg, scenario: advanced ? effScenario() : undefined, fog: advanced ? fogIn.checked : undefined });
     } },
-      h('div', { class: 'setup-head' }, h('button', { type: 'button', class: 'btn ghost sm', onclick: onBack }, '‹ Indietro'), h('h2', null, 'Nuova partita')),
+      h('div', { class: 'setup-head' }, h('button', { type: 'button', class: 'btn ghost sm', onclick: onBack }, '‹ Indietro'), h('h2', null, advanced ? 'Partita avanzata' : 'Nuova partita')),
       humanRows,
       h('div', { class: 'grp' }, h('div', { class: 'row' }, h('label', null, 'Mappa'), mapCards), seedRow),
       h('div', { class: 'grp' }, h('div', { class: 'row' }, h('label', null, 'Stile grafico'), skinCards)),
@@ -168,9 +215,10 @@ export class Screens {
           h('div', null, h('label', null, 'Nazioni'), natIn),
           h('div', null, h('label', null, 'Tribù'), triIn)),
         h('label', { class: 'check' }, specIn, h('span', null, 'Solo spettatore (nessun giocatore umano)'))),
+      advGrp,
       h('div', { class: 'setup-foot' }, startBtn));
     refresh();
-    this.set(h('div', { class: 'scr setup' }, form));
+    this.set(h('div', { class: `scr setup${advanced ? ' adv' : ''}` }, form));
     setTimeout(() => { if (!specIn.checked) nameIn.focus(); }, 60);
   }
 
@@ -194,6 +242,11 @@ export class Screens {
         info.textContent = v ? (label ?? 'Pronto. Conferma o scegli un altro punto.') : 'Clicca un punto di terraferma per scegliere dove nasce la tua nazione.';
       },
     };
+  }
+
+  /** Open an arbitrary panel as a modal (backdrop click calls onClose). */
+  panel(el: HTMLElement, onClose: () => void): void {
+    this.openModal(h('div', { class: 'modal-wrap', onclick: (e: Event) => { if (e.target === e.currentTarget) onClose(); } }, el));
   }
 
   // ── modals ─────────────────────────────────────────────────────────────────
@@ -238,6 +291,26 @@ export class Screens {
             line([k('?')], 'Questa guida.'),
             h('h3', null, 'Diplomazia'),
             h('p', { class: 'small' }, 'Dal menu di un altro territorio: proponi alleanze, embarghi, donazioni. Gli alleati non possono attaccarsi; chi rompe un’alleanza diventa traditore.'))),
+        h('div', { class: 'help-adv' },
+          h('h3', null, 'Modalità avanzata'),
+          h('div', { class: 'help-adv-grid' },
+            ([
+              ['Fronti', 'Il clic attacca un punto preciso (più forte, solo vicino al punto). «Fronte intero» attacca tutto il confine. La postura (offensiva, bilanciata, difensiva) sposta forza tra attacco e difesa.'],
+              ['Capitale e rifornimenti', 'Lontano da capitale, città e porti l’attacco si indebolisce. Le terre tagliate fuori difendono poco e dopo un po’ si arrendono. Se cade la capitale perdi truppe e oro; gli imperi troppo grandi subiscono rivolte lontano dai centri.'],
+              ['Economia', 'Il cursore lavoratori/soldati sposta la crescita tra oro e truppe. Ogni struttura oltre le prime costa manutenzione.'],
+              ['Risorse', 'Giacimenti sulla mappa: petrolio (navi, flotta), ferro (attacco), uranio (serve per le atomiche). Ognuno rende anche oro.'],
+              ['Flotta', 'Dai tuoi porti costruisci navi da guerra: affondano navi nemiche e bloccano i porti. «Invia flotta» le manda a pattugliare un mare.'],
+              ['Dottrine', 'Tre rami (Guerra lampo, Fortezza, Proiezione) da tre livelli. Una ricerca alla volta, costa oro e tempo.'],
+              ['Diplomazia', 'Dal menu di un altro paese: patto di non aggressione, tregua, tributo, guerra congiunta con un alleato. Rompere un patto costa reputazione.'],
+              ['Scenari e obiettivi', '1939 e Guerra fredda (mondo reale) partono con blocchi e guerre. Obiettivi a tempo ti danno oro se li completi.'],
+              ['Nebbia di guerra', 'Vedi solo vicino ai tuoi confini, alle tue città e alle tue navi. Il resto mostra l’ultimo stato visto; truppe sconosciute appaiono come «?».'],
+            ] as [string, string][]).map(([t, d]) => h('div', { class: 'hadv' }, h('b', null, t), h('span', null, d)))),
+          h('div', { class: 'help-adv-keys' },
+            line([k('Z')], 'Cambia postura.'),
+            line([k('G')], 'Attacco mirato / fronte intero.'),
+            line([k('R')], 'Dottrine.'),
+            line([k('X')], 'Invia flotta, poi clicca il mare.'),
+            line([k('K')], 'Vai alla capitale.'))),
         h('div', { class: 'help-foot' }, h('button', { class: 'btn primary', onclick: onClose }, 'Ho capito')))));
   }
 

@@ -272,3 +272,52 @@ body.m-rotate-on .ctxmenu, body.m-rotate-on .toasts { display: none; }
   .setup-card .swc { width: 34px; height: 34px; }
   .modal .btn, .setup-card .btn, .title-actions .btn { min-height: 44px; }
 }
+
+/* ══ ADVANCED MODE on touch ═══════════════════════════════════════════════════════════════════ */
+.m-db.cmd { display: none; position: relative; }
+body.touch-ui.adv-match .m-db.cmd { display: flex; }
+.m-db.cmd.attn::after {
+  content: ""; position: absolute; top: 5px; right: 9px; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--danger); box-shadow: 0 0 0 2px var(--panel-solid);
+}
+/* the command sheet: closed = only the attacks list stays in the left column */
+body.touch-ui .adv-col:not(.open) .adv-panel, body.touch-ui .adv-col:not(.open) .adv-obj { display: none; }
+body.touch-ui .adv-col.open { z-index: 5; }
+body.touch-ui .adv-col { touch-action: pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+body.touch-ui .adv-col .attacks { position: static; width: auto; max-height: none; overflow: visible; }
+body.touch-ui .adv-stance button { min-height: 36px; }
+body.touch-ui .adv-btns .btn, body.touch-ui .adv-caprow .btn, body.touch-ui .adv-pact .btn { min-height: 38px; }
+body.touch-ui .adv-btns kbd { display: none; }
+body.touch-ui .adv-panel input[type=range] { height: 30px; background-size: 100% 8px; background-repeat: no-repeat; background-position: center;
+  background-image: linear-gradient(90deg, var(--gold) var(--p, 50%), var(--danger) var(--p, 50%)); background-color: transparent; }
+body.touch-ui .adv-panel input[type=range]::-webkit-slider-thumb { width: 26px; height: 26px; }
+body.touch-ui .rt-front { min-height: 30px; padding: 0 9px; font-size: 10.5px; }
+body.touch-ui .adv-o { min-height: 40px; }
+body.touch-ui .cm-row.sub .cm-build.cm-sub { width: auto; }
+body.touch-ui .adv-docs .ib { flex: none; }
+
+@media (max-height: 520px), (max-width: 700px) {
+  body.touch-ui .adv-col {
+    top: var(--top-h); left: var(--sa-l); width: 252px;
+    max-height: calc(100dvh - var(--top-h) - var(--sa-b) - 124px);
+  }
+  body.touch-ui .adv-col.open { max-height: calc(100dvh - var(--top-h) - var(--sa-b) - 64px); }
+  body.touch-ui.paused .adv-col { top: calc(var(--top-h) + 30px); }
+  body.touch-ui .adv-tag.top { display: none; }
+  body.touch-ui.adv-match .ratio, body.touch-ui.adv-match .m-banner:not(.hidden) { left: calc(var(--sa-l) + 282px); }
+  body.touch-ui.adv-match .requests { max-width: calc(100vw - var(--sa-l) - var(--sa-r) - 520px); }
+  body.touch-ui .adv-docs { padding: 12px; }
+  body.touch-ui .adv-brs { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  body.touch-ui .adv-br { padding: 7px; }
+  body.touch-ui .adv-lv { font-size: 11px; padding: 5px 6px; }
+  body.touch-ui .adv-lv-h small { font-size: 9.5px; }
+  body.touch-ui .help-adv-grid { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 720px) {
+  body.touch-ui.adv-match .ratio, body.touch-ui.adv-match .m-banner:not(.hidden) { left: calc(var(--sa-l) + 262px); }
+}
+@media (max-height: 520px), (max-width: 700px) {
+  body.touch-ui.adv-match .ratio-head .lbl { display: none; }
+  body.touch-ui.adv-match .ratio-val { text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  body.touch-ui.adv-match .ratio-head { align-items: center; }
+}

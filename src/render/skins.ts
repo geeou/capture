@@ -100,6 +100,18 @@ export interface Skin {
   tagInk: string;
   miniFrame: string;
   fx: FxTheme;
+  // ── advanced mode ──
+  /** Fog of war: colours outside vision are desaturated by `fogDesat`, then mixed towards `fogTint` by `fogK`
+   * (`fogK2` for land never explored). */
+  fogTint: RGB;
+  fogDesat: number;
+  fogK: number;
+  fogK2: number;
+  /** Hatch colour of cut-off (out of supply) tiles and how strongly it is mixed in. */
+  cut: RGB;
+  cutK: number;
+  /** Ink of unowned deposits / neutral advanced markers. */
+  neutral: string;
 }
 
 const diag = (per: number, on: number, dir: number) => (x: number, y: number) => ((x + dir * y) % per + per) % per < on;
@@ -129,6 +141,7 @@ function makeRadar(): Skin {
     struct: 'bracket', accent: '#ffbe3c', hot: [255, 76, 62],
     hover: 'rgba(160,255,200,0.55)', select: 'rgba(255,200,90,0.8)', wake: 'rgba(90,255,160,', text: '#62f59d', halo: 'rgba(0,8,4,0.85)',
     tagBg: 'rgba(0,12,6,0.88)', tagInk: '#ffb23e', miniFrame: '#ffbe3c',
+    fogTint: [1, 6, 5], fogDesat: 0.75, fogK: 0.5, fogK2: 0.72, cut: [255, 190, 60], cutK: 0.55, neutral: '#7fa592',
     fx: { flash: '#c8ffdc', core: [235, 255, 240], mid: [120, 255, 170], outer: [30, 190, 100], ring: '#7dffb0', smoke: [6, 34, 20], puff: '#9effc4', ping: '#ffbe3c' },
   };
 }
@@ -158,6 +171,7 @@ function makeHolo(): Skin {
     struct: 'disc', accent: '#7fe8ff', hot: [255, 110, 200],
     hover: 'rgba(170,240,255,0.55)', select: 'rgba(255,255,255,0.8)', wake: 'rgba(140,235,255,', text: '#cdeeff', halo: 'rgba(3,10,26,0.8)',
     tagBg: 'rgba(7,22,46,0.9)', tagInk: '#ffc0d0', miniFrame: '#7fe8ff',
+    fogTint: [4, 9, 22], fogDesat: 0.8, fogK: 0.5, fogK2: 0.72, cut: [255, 255, 255], cutK: 0.5, neutral: '#9fb3c4',
     fx: { flash: '#d8f7ff', core: [255, 255, 255], mid: [140, 242, 255], outer: [255, 110, 200], ring: '#bff6ff', smoke: [20, 30, 60], puff: '#cdeeff', ping: '#7fe8ff' },
   };
 }
@@ -186,6 +200,7 @@ function makeTat(): Skin {
     struct: 'box', accent: '#ffb000', hot: [255, 176, 0],
     hover: 'rgba(240,240,215,0.5)', select: 'rgba(255,176,0,0.85)', wake: 'rgba(210,212,190,', text: '#cfd0bd', halo: 'rgba(14,16,10,0.85)',
     tagBg: '#12140e', tagInk: '#ffb000', miniFrame: '#ffb000',
+    fogTint: [16, 20, 23], fogDesat: 0.8, fogK: 0.5, fogK2: 0.7, cut: [255, 176, 0], cutK: 0.6, neutral: '#a3a48c',
     fx: { flash: '#fff1cc', core: [255, 244, 210], mid: [255, 176, 0], outer: [255, 96, 40], ring: '#ffcf66', smoke: [40, 42, 32], puff: '#e2e3ca', ping: '#ffb000' },
   };
 }
@@ -213,6 +228,7 @@ function makeOrb(): Skin {
     struct: 'ring', accent: '#ff5a1f', hot: [216, 60, 0],
     hover: 'rgba(20,22,26,0.45)', select: 'rgba(255,90,31,0.85)', wake: 'rgba(20,22,26,', text: '#14161a', halo: 'rgba(250,251,252,0.85)',
     tagBg: '#fafbfc', tagInk: '#d83c00', miniFrame: '#ff5a1f',
+    fogTint: [226, 229, 232], fogDesat: 0.85, fogK: 0.55, fogK2: 0.78, cut: [20, 22, 26], cutK: 0.55, neutral: '#5d646b',
     fx: { flash: '#ffffff', core: [255, 250, 240], mid: [255, 140, 90], outer: [216, 60, 0], ring: '#14161a', smoke: [120, 126, 132], puff: '#14161a', ping: '#ff5a1f' },
   };
 }

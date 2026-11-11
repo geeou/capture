@@ -8,6 +8,7 @@ import { installNaval } from './naval';
 import { installNukes } from './nukes';
 import { installDiplomacy } from './diplomacy';
 import { installAI } from './ai';
+import { installAdvanced } from './adv/index';
 
 export * from './types';
 export { Game } from './game';
@@ -90,5 +91,7 @@ export function createGame(map: MapData, opts: GameOptions = {}): Game {
   installNukes(g);
   installDiplomacy(g);
   installAI(g);
+  // Advanced mode: extra systems on top of the classic ones (docs/ADVANCED.md). Classic matches skip this entirely.
+  if (opts.advanced) installAdvanced(g, opts);
   return g;
 }

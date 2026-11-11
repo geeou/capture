@@ -4,7 +4,9 @@ import type { NationSeed, NukeKind, Player, StructureType, Unit } from '../sim/t
 import { Camera } from './camera';
 import { MapLayer } from './mapLayer';
 import { Effects } from './effects';
-import { drawGlyph, STRUCTURE_KEY } from './icons';
+import { drawAdvGlyph, drawGlyph, STRUCTURE_KEY, type AdvGlyph } from './icons';
+import { ADV } from '../sim/adv/rules';
+import { fogOf, type FogState } from '../sim/adv/fog';
 import { Relations } from './relations';
 import {
   R_ALLY, R_ENEMY, R_ME, R_NEUTRAL, R_TRIBE, REL_PRIO, css, getSkin, mix, onSkinChange, skinId,
@@ -15,9 +17,18 @@ import { fmt } from '../ui/format';
 /** Generic UI font (kept for callers that drew text with it). */
 export const FONT = '"Inter", "SF Pro Text", "Segoe UI", system-ui, -apple-system, sans-serif';
 
+/**
+ * Aiming mode set by the UI. Advanced-only kinds: 'focus' (focused attack: radius ring at the cursor),
+ * 'fleet' (warship patrol target on water), 'capital' (move the capital: own cities highlighted).
+ * For the advanced kinds the renderer computes the refusal reason itself (adv.q.canAttackAt / canSendFleet /
+ * canMoveCapital) and ignores `aimReason`.
+ */
 export type Aim =
   | { kind: 'nuke'; nuke: NukeKind }
   | { kind: 'boat' }
+  | { kind: 'focus' }
+  | { kind: 'fleet' }
+  | { kind: 'capital' }
   | null;
 
 export interface SpawnOverlay {
@@ -66,6 +77,12 @@ export class Renderer {
   private fxAt = 0;
   /** Smoothed frame time (ms) for the debug overlay / perf checks. */
   frameMs = 16;
+  // advanced mode
+  private fog: FogState | null = null;
+  private blockTick = -1;
+  private blocked = new Set<number>();
+  private advReasonKey = '';
+  private advReason: string | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -97,6 +114,9 @@ export class Renderer {
     this.fx.theme = this.skin.fx;
     this.relations = new Relations(game);
     this.layer = new MapLayer(game, this.skin, this.relations);
+    this.fog = game.advanced ? fogOf(game) : null;
+    this.fx.hidden = this.fog ? (x, y) => !this.seesXY(x, y) : null;
+    this.blockTick = -1; this.blocked.clear(); this.advReasonKey = '';
     this.cam.setMap(game.W, game.H);
     if (!keepCamera) this.cam.fit();
     this.prev.clear(); this.trails.clear(); this.labelPos.clear(); this.cooldowns.clear();
@@ -163,7 +183,18 @@ export class Renderer {
     this.frameMs += (Math.min(dt, 200) - this.frameMs) * 0.08;
     this.cam.update(dt);
 
-    if (g.trackChanges && g.changed.length) { this.layer.apply(g.changed); g.changed.length = 0; }
+    const fog = this.fog;
+    if (!fog) {
+      if (g.trackChanges && g.changed.length) { this.layer.apply(g.changed); g.changed.length = 0; }
+    } else {
+      // fog: tiles that change outside vision keep their remembered look; tiles whose visibility or memory
+      // flipped are repainted from fog.changed (a mass reveal repaints the whole layer once)
+      if (g.changed.length) { if (g.trackChanges) this.layer.apply(g.changed, true); g.changed.length = 0; }
+      if (fog.changed.length) {
+        if (fog.changed.length > g.N / 4) this.layer.fullPaint(); else this.layer.apply(fog.changed);
+        fog.changed.length = 0;
+      }
+    }
     const relChanged = this.relations.update();
     if (relChanged) { this.layer.recolor(relChanged); this.markers.clear(); }
     this.layer.flush();
@@ -184,7 +215,9 @@ export class Renderer {
     this.drawHover(c);
     if (this.spawn) this.drawSpawn(c, now);
     else {
+      if (g.advanced && g.adv) this.drawFocusRings(c, now);
       this.drawStructures(c);
+      if (g.advanced && g.adv) this.drawAdvMarkers(c, now);
       if (this.showLabels) this.drawLabels(c);
       this.drawUnits(c, alpha, now);
       this.fx.draw(c, cam, now);
@@ -355,7 +388,8 @@ export class Renderer {
   private drawHover(c: CanvasRenderingContext2D): void {
     const g = this.game, cam = this.cam, sk = this.skin;
     const ids: number[] = [];
-    const ho = this.hoverTile >= 0 ? g.owner[this.hoverTile] : 0;
+    const ho = this.hoverTile >= 0 ? this.shownOwner(this.hoverTile) : 0;
+    const vis = this.fog && !this.fog.off ? this.fog.visible : null;
     if (ho && !this.spawn) ids.push(ho);
     if (this.selected && this.selected !== ho && g.players[this.selected]?.alive) ids.push(this.selected);
     const [bx0, by0, bx1, by1] = cam.bounds();
@@ -369,6 +403,7 @@ export class Renderer {
       for (const i of p.border) {
         const x = i % W, y = (i / W) | 0;
         if (x < bx0 - 1 || x > bx1 || y < by0 - 1 || y > by1) continue;
+        if (vis && !vis[i]) continue;
         c.rect(cam.toScreenX(x), cam.toScreenY(y), s, s);
         if (++n > 30000) break;
       }
@@ -458,6 +493,15 @@ export class Renderer {
       if (f < 8) continue;
       f = Math.round(f);
       const lp = this.anchor(p, budget);
+      let troops = true;
+      if (this.fog && !this.fog.off) {
+        // in the fog: name only, and only where the map remembers this player
+        const ti = Math.round(lp.y) * g.W + Math.round(lp.x);
+        if (ti >= 0 && ti < g.N && !this.fog.visible[ti]) {
+          if (this.fog.seenOwner[ti] !== p.id) continue;
+          troops = false;
+        }
+      }
       const sx = cam.toScreenX(lp.x + 0.5), sy = cam.toScreenY(lp.y + 0.5);
       const w = wpx * f + 6, h = f * 2.05;
       const x0 = sx - w / 2, y0 = sy - f * 0.75;
@@ -468,12 +512,12 @@ export class Renderer {
       }
       if (hit) continue;
       placed.push(x0, y0, x0 + w, y0 + h);
-      this.drawLabel(c, p, name, rel[p.id], sx, sy, f, wpx * f);
+      this.drawLabel(c, p, name, rel[p.id], sx, sy, f, wpx * f, troops);
     }
     if ('letterSpacing' in c) (c as any).letterSpacing = '0px';
   }
 
-  private drawLabel(c: CanvasRenderingContext2D, p: Player, name: string, r: number, sx: number, sy: number, f: number, w: number): void {
+  private drawLabel(c: CanvasRenderingContext2D, p: Player, name: string, r: number, sx: number, sy: number, f: number, w: number, troops = true): void {
     const sk = this.skin, g = this.game;
     const ec = this.layer.edgeRgb[p.id] ?? WHITE;
     const traitor = p.traitorUntil > g.tick;
@@ -503,6 +547,7 @@ export class Renderer {
     c.fillStyle = fill;
     c.fillText(name, sx, nameY);
     this.setTrack(c, 0);
+    if (!troops) return;
     // troops line
     const tf = Math.max(8, Math.round(f * 0.62));
     const ty = sy + f * 0.62;
@@ -601,8 +646,10 @@ export class Renderer {
     const half = size / 2;
     const [bx0, by0, bx1, by1] = cam.bounds();
     const pad = half / cam.scale + 1;
+    const vis = this.fog && !this.fog.off ? this.fog.visible : null;
     for (const s of g.structures) {
       if (s.x < bx0 - pad || s.x > bx1 + pad || s.y < by0 - pad || s.y > by1 + pad) continue;
+      if (vis && !vis[s.tile]) continue;
       const sx = cam.toScreenX(s.x + 0.5), sy = cam.toScreenY(s.y + 0.5);
       const building = s.readyTick > g.tick;
       const m = this.marker(s.type as StructureType, s.owner, size, building);
@@ -636,9 +683,11 @@ export class Renderer {
     if (!g.units.length) return;
     const [bx0, by0, bx1, by1] = cam.bounds();
     const nukes: Unit[] = [];
+    const fogOn = !!this.fog && !this.fog.off;
     for (const u of g.units) {
       if (!u.alive) continue;
       if (u.type === 'atom' || u.type === 'hydrogen') { nukes.push(u); continue; }
+      if (fogOn && !this.friendly(u.owner) && !this.seesXY(u.x, u.y)) continue;
       const pv = this.prev.get(u.id);
       const wx = pv ? pv[0] + (u.x - pv[0]) * alpha : u.x;
       const wy = pv ? pv[1] + (u.y - pv[1]) * alpha : u.y;
@@ -650,9 +699,13 @@ export class Renderer {
       }
       const sx = cam.toScreenX(wx + 0.5), sy = cam.toScreenY(wy + 0.5);
       if (u.type === 'interceptor') { this.drawInterceptor(c, sx, sy, tr); continue; }
+      if (u.type === 'warship') { this.drawWarship(c, u, sx, sy, tr, now); continue; }
       this.drawBoat(c, u, sx, sy, tr, now);
     }
-    for (const u of nukes) this.drawNuke(c, u, alpha, now);
+    for (const u of nukes) {
+      if (fogOn && !this.friendly(u.owner) && !this.seesXY(u.x, u.y)) continue;
+      this.drawNuke(c, u, alpha, now);
+    }
   }
 
   private drawWake(c: CanvasRenderingContext2D, tr: Trail | undefined, sx: number, sy: number, width: number): void {
@@ -832,10 +885,13 @@ export class Renderer {
     if (!this.aim || this.hoverTile < 0) return;
     const x = g.xOf(this.hoverTile), y = g.yOf(this.hoverTile);
     const sx = cam.toScreenX(x + 0.5), sy = cam.toScreenY(y + 0.5);
-    const ok = this.aimReason === null;
+    const advAim = this.aim.kind === 'focus' || this.aim.kind === 'fleet' || this.aim.kind === 'capital';
+    const reason = advAim ? this.advAimReason() : this.aimReason;
+    const ok = reason === null;
     const off = sk.light ? 'rgba(110,118,126,' : 'rgba(170,180,195,';
     c.save();
-    if (this.aim.kind === 'nuke') {
+    if (advAim) this.drawAdvAim(c, sx, sy, ok, now);
+    else if (this.aim.kind === 'nuke') {
       const R = Math.max(2, g.q.nukeRadius(this.aim.nuke)) * cam.scale;
       c.strokeStyle = ok ? css(sk.hot, 0.95) : off + '0.8)';
       c.fillStyle = ok ? css(sk.hot, 0.14) : off + '0.12)';
@@ -866,15 +922,15 @@ export class Renderer {
       c.beginPath(); c.arc(sx, sy, 9, 0, Math.PI * 2); c.stroke();
       c.beginPath(); c.moveTo(sx, sy - 5); c.lineTo(sx, sy + 5); c.moveTo(sx - 4, sy + 1); c.quadraticCurveTo(sx, sy + 7, sx + 4, sy + 1); c.stroke();
     }
-    if (this.aimReason) {
+    if (reason) {
       c.font = `600 12px ${sk.mono}`;
       c.textAlign = 'left'; c.textBaseline = 'middle';
-      const w = c.measureText(this.aimReason).width + 14;
+      const w = c.measureText(reason).width + 14;
       c.fillStyle = sk.tagBg;
       c.fillRect(sx + 16, sy + 12, w, 22);
       if (sk.light) { c.strokeStyle = '#14161a'; c.lineWidth = 1; c.strokeRect(sx + 16.5, sy + 12.5, w - 1, 21); }
       c.fillStyle = sk.tagInk;
-      c.fillText(this.aimReason, sx + 23, sy + 23);
+      c.fillText(reason, sx + 23, sy + 23);
     }
     c.restore();
   }
@@ -934,6 +990,332 @@ export class Renderer {
       c.fillStyle = sk.light ? '#14161a' : css(mix(look.e, WHITE, 0.3));
       c.fillText(nm, sx, sy - Math.max(6, pickR) - 14);
       this.setTrack(c, 0);
+    }
+  }
+
+  // ── advanced mode ──────────────────────────────────────────────────────────
+  /** Owner the map shows on a tile: the real one inside vision, the remembered one in the fog (for UI hover). */
+  shownOwner(tile: number): number {
+    return this.layer ? this.layer.shownOwner(tile) : this.game.owner[tile];
+  }
+  /** True when the human can see the tile (always true without fog). */
+  sees(tile: number): boolean {
+    const f = this.fog;
+    return !f || f.off || f.visible[tile] === 1;
+  }
+  private seesXY(x: number, y: number): boolean {
+    const g = this.game;
+    const xi = Math.max(0, Math.min(g.W - 1, Math.round(x))), yi = Math.max(0, Math.min(g.H - 1, Math.round(y)));
+    return this.sees(yi * g.W + xi);
+  }
+  private friendly(id: number): boolean {
+    const g = this.game, me = g.humanId;
+    return id === me || (me > 0 && g.players[me].allies.has(id));
+  }
+  /** Colour used when an advanced aim is refused (distinct from the accent in every skin). */
+  private refuseCol(a = 0.9): string {
+    const sk = this.skin;
+    return sk.id === 'orb' ? `rgba(110,118,126,${a})` : sk.id === 'tat' ? `rgba(255,100,78,${a})` : css(sk.hot, a);
+  }
+  private goodCol(): string {
+    const id = this.skin.id;
+    return id === 'radar' ? '#5aff9b' : id === 'holo' ? '#8cf2ff' : id === 'tat' ? '#9be07a' : '#1f8a3a';
+  }
+
+  /** Pre-rendered deposit (diamond badge) or capital (star) marker, cached like structure markers. */
+  private advMarker(shape: 'dep' | 'cap', kind: AdvGlyph, owner: number, size: number): HTMLCanvasElement {
+    const sk = this.skin;
+    const col = owner ? this.colorOf(owner) : sk.neutral;
+    const r = owner ? this.relations.rel[owner] ?? 0 : 0;
+    const key = `${shape}|${sk.id}|${kind}|${col}|${size}|${r}`;
+    let cv = this.markers.get(key);
+    if (cv) return cv;
+    if (this.markers.size > 500) this.markers.clear();
+    const d = this.dpr, pad = 6;
+    const box = Math.ceil((size * 1.5 + pad * 2) * d);
+    cv = document.createElement('canvas');
+    cv.width = cv.height = box;
+    const c = cv.getContext('2d')!;
+    c.scale(d, d);
+    const x = box / d / 2, y = box / d / 2, half = size / 2;
+    if (shape === 'cap') {
+      const glow = sk.glow > 0;
+      drawAdvGlyph(c, 'capital', x, y, half * 1.28, sk.light ? '#fafbfc' : sk.halo);
+      if (glow) { c.shadowColor = col; c.shadowBlur = 8; }
+      drawAdvGlyph(c, 'capital', x, y, half, sk.light && r === 0 ? '#14161a' : col);
+      c.shadowBlur = 0;
+      if (sk.light) drawAdvGlyph(c, 'capital', x, y, half * 0.42, '#fafbfc');
+      else drawAdvGlyph(c, 'capital', x, y, half * 0.4, sk.id === 'tat' ? '#12140e' : '#ffffff');
+    } else {
+      const q = half + 1;
+      c.beginPath();
+      c.moveTo(x, y - q * 1.12); c.lineTo(x + q * 1.12, y); c.lineTo(x, y + q * 1.12); c.lineTo(x - q * 1.12, y); c.closePath();
+      let ink = col;
+      switch (sk.struct) {
+        case 'bracket':
+          c.fillStyle = 'rgba(0,8,4,0.85)'; c.fill();
+          c.strokeStyle = col; c.lineWidth = 1.2; c.shadowColor = col; c.shadowBlur = owner ? 5 : 0; c.stroke(); c.shadowBlur = 0;
+          break;
+        case 'disc':
+          c.fillStyle = 'rgba(4,14,32,0.88)'; c.fill();
+          c.strokeStyle = col; c.lineWidth = 1.4; c.shadowColor = col; c.shadowBlur = owner ? 8 : 0; c.stroke(); c.shadowBlur = 0;
+          ink = owner ? '#eaf9ff' : sk.neutral;
+          break;
+        case 'box':
+          c.fillStyle = '#12140e'; c.fill();
+          c.strokeStyle = col; c.lineWidth = 1.5; c.stroke();
+          break;
+        default:
+          c.fillStyle = r === 1 ? '#ffffff' : r === 3 ? '#14161a' : '#fafbfc'; c.fill();
+          c.strokeStyle = owner ? (r === 3 ? '#14161a' : col) : '#5d646b'; c.lineWidth = owner ? 1.6 : 1.2; c.stroke();
+          ink = r === 3 ? '#ffffff' : owner ? col : '#5d646b';
+      }
+      drawAdvGlyph(c, kind, x, y, half * 0.66, ink);
+    }
+    this.markers.set(key, cv);
+    return cv;
+  }
+
+  /** Focus rings of the human's focused attacks (attack.ext.focus), under the structures. */
+  private drawFocusRings(c: CanvasRenderingContext2D, now: number): void {
+    const g = this.game, cam = this.cam, sk = this.skin, me = g.humanId;
+    if (!me || !g.attacks.length) return;
+    const R = ADV.focusRadius * cam.scale;
+    for (const a of g.attacks) {
+      if (!a.alive || a.attacker !== me) continue;
+      const f = a.ext.focus as { x: number; y: number } | undefined;
+      if (!f) continue;
+      const sx = cam.toScreenX(f.x + 0.5), sy = cam.toScreenY(f.y + 0.5);
+      if (sx < -R - 20 || sy < -R - 20 || sx > cam.viewW + R + 20 || sy > cam.viewH + R + 20) continue;
+      c.save();
+      c.strokeStyle = sk.accent;
+      c.fillStyle = sk.accent;
+      c.globalAlpha = sk.light ? 0.07 : 0.06;
+      c.beginPath(); c.arc(sx, sy, R, 0, Math.PI * 2); c.fill();
+      c.globalAlpha = 0.9;
+      c.lineWidth = sk.light ? 1.5 : 2;
+      c.setLineDash([8, 6]);
+      c.lineDashOffset = -now * 0.02;
+      c.stroke();
+      c.setLineDash([]);
+      const k = Math.max(5, Math.min(10, R * 0.18));
+      c.beginPath();
+      for (const [qx, qy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { c.moveTo(sx + qx * (R - k), sy + qy * (R - k)); c.lineTo(sx + qx * (R + k * 0.6), sy + qy * (R + k * 0.6)); }
+      c.moveTo(sx - 5, sy); c.lineTo(sx + 5, sy); c.moveTo(sx, sy - 5); c.lineTo(sx, sy + 5);
+      c.stroke();
+      c.restore();
+    }
+  }
+
+  /** Deposits, capitals and blockaded-port warnings. */
+  private drawAdvMarkers(c: CanvasRenderingContext2D, now: number): void {
+    const g = this.game, adv = g.adv!, cam = this.cam, sk = this.skin, W = g.W;
+    const [bx0, by0, bx1, by1] = cam.bounds();
+    const fog = this.fog && !this.fog.off ? this.fog : null;
+    const structsShown = cam.scale >= 1.6;
+    const sSize = Math.round(Math.max(11, Math.min(26, cam.scale * 3.2)));
+    // deposits: terrain, so visible on explored land even in the fog (owner as remembered there)
+    if (adv.deposits.length) {
+      const size = Math.round(Math.max(10, Math.min(22, cam.scale * 2.8)));
+      const pad = size / cam.scale + 1;
+      for (const d of adv.deposits) {
+        if (d.x < bx0 - pad || d.x > bx1 + pad || d.y < by0 - pad || d.y > by1 + pad) continue;
+        if (fog && !fog.explored[d.tile]) continue;
+        const m = this.advMarker('dep', d.kind, this.shownOwner(d.tile), size);
+        const mw = m.width / this.dpr;
+        let sx = cam.toScreenX(d.x + 0.5), sy = cam.toScreenY(d.y + 0.5);
+        if (structsShown && g.structureAt.has(d.tile) && this.sees(d.tile)) { sx -= sSize * 0.62; sy += sSize * 0.62; }
+        c.drawImage(m, sx - mw / 2, sy - mw / 2, mw, mw);
+      }
+    }
+    // capitals (hidden in the fog, like structures)
+    const ps = g.players;
+    for (let id = 1; id < ps.length; id++) {
+      const p = ps[id];
+      if (!p.alive) continue;
+      const cap = adv.players[id]?.capital ?? -1;
+      if (cap < 0) continue;
+      if (p.kind === 'tribe' && cam.scale < 2.5) continue;
+      const x = cap % W, y = (cap / W) | 0;
+      if (x < bx0 - 3 || x > bx1 + 3 || y < by0 - 3 || y > by1 + 3) continue;
+      if (fog && !fog.visible[cap]) continue;
+      let size = Math.round(Math.max(p.kind === 'tribe' ? 9 : 11, Math.min(24, cam.scale * 3.4)));
+      let sx = cam.toScreenX(x + 0.5), sy = cam.toScreenY(y + 0.5);
+      if (structsShown && g.structureAt.has(cap)) { size = Math.round(sSize * 0.8); sx += sSize * 0.6; sy -= sSize * 0.6; }
+      const m = this.advMarker('cap', 'capital', id, size);
+      const mw = m.width / this.dpr;
+      c.drawImage(m, sx - mw / 2, sy - mw / 2, mw, mw);
+    }
+    // blockaded ports (queried a few times per second, not per frame)
+    if (g.tick !== this.blockTick && (g.tick - this.blockTick >= 5 || g.tick < this.blockTick)) {
+      this.blockTick = g.tick;
+      this.blocked.clear();
+      for (const s of g.structures) if (s.type === 'port' && adv.q.isBlockaded(s)) this.blocked.add(s.id);
+    }
+    if (this.blocked.size) {
+      const me = g.humanId;
+      const pulse = 0.5 + 0.5 * Math.sin(now * 0.008);
+      for (const s of g.structures) {
+        if (!this.blocked.has(s.id)) continue;
+        if (!structsShown && s.owner !== me) continue;
+        if (s.x < bx0 - 3 || s.x > bx1 + 3 || s.y < by0 - 3 || s.y > by1 + 3) continue;
+        if (fog && !fog.visible[s.tile]) continue;
+        let sx = cam.toScreenX(s.x + 0.5), sy = cam.toScreenY(s.y + 0.5);
+        if (structsShown) { sx -= sSize * 0.62; sy -= sSize * 0.62; }
+        const k = 7 + (s.owner === me ? 1.5 : 0);
+        c.save();
+        if (s.owner === me) {
+          c.strokeStyle = css(sk.hot, 0.35 + 0.5 * (1 - pulse)); c.lineWidth = 2;
+          c.beginPath(); c.arc(sx, sy + 1, k + 4 + pulse * 6, 0, Math.PI * 2); c.stroke();
+        }
+        c.beginPath();
+        c.moveTo(sx, sy - k); c.lineTo(sx + k * 1.1, sy + k * 0.85); c.lineTo(sx - k * 1.1, sy + k * 0.85); c.closePath();
+        c.fillStyle = css(sk.hot); c.fill();
+        c.strokeStyle = sk.light ? '#14161a' : sk.halo; c.lineWidth = 1.5; c.stroke();
+        c.fillStyle = sk.light ? '#ffffff' : sk.id === 'tat' ? '#12140e' : '#ffffff';
+        c.font = `700 ${Math.round(k * 1.2)}px ${sk.mono}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+        c.fillText('!', sx, sy + k * 0.22);
+        c.restore();
+      }
+    }
+  }
+
+  private drawWarship(c: CanvasRenderingContext2D, u: Unit, sx: number, sy: number, tr: Trail | undefined, now: number): void {
+    const cam = this.cam, sk = this.skin, g = this.game;
+    const mine = u.owner === g.humanId;
+    const L = Math.max(13, Math.min(26, cam.scale * 3.8)) * (mine ? 1.1 : 1);
+    const col = this.colorOf(u.owner);
+    const pt = u.ext.patrol as { x: number; y: number } | undefined;
+    if (mine && pt) {
+      const px = cam.toScreenX(pt.x + 0.5), py = cam.toScreenY(pt.y + 0.5), R = ADV.patrolRadius * cam.scale;
+      c.save();
+      c.strokeStyle = sk.accent;
+      c.globalAlpha = 0.5;
+      c.lineWidth = 1.2;
+      c.setLineDash([3, 6]);
+      c.lineDashOffset = -now * 0.01;
+      c.beginPath(); c.arc(px, py, R, 0, Math.PI * 2); c.stroke();
+      c.setLineDash([]);
+      c.globalAlpha = 0.8;
+      c.beginPath(); c.moveTo(px - 4, py); c.lineTo(px + 4, py); c.moveTo(px, py - 4); c.lineTo(px, py + 4); c.stroke();
+      c.restore();
+    }
+    this.drawWake(c, tr, sx, sy, L * 0.32);
+    c.save();
+    c.translate(sx, sy);
+    c.rotate(tr ? tr.angle : 0);
+    const z = L * 0.5;
+    c.beginPath();
+    c.moveTo(z * 1.25, 0); c.lineTo(z * 0.6, -z * 0.42); c.lineTo(-z * 0.95, -z * 0.42); c.lineTo(-z * 1.1, 0);
+    c.lineTo(-z * 0.95, z * 0.42); c.lineTo(z * 0.6, z * 0.42); c.closePath();
+    let deck: string;
+    if (sk.id === 'orb') {
+      const enemy = this.relationOf(u.owner) === R_ENEMY;
+      c.fillStyle = mine ? '#ff5a1f' : enemy ? '#14161a' : col;
+      c.strokeStyle = mine || enemy ? '#ffffff' : '#14161a';
+      c.lineWidth = 1.2; c.fill(); c.stroke();
+      deck = mine || enemy ? '#ffffff' : '#14161a';
+    } else {
+      c.fillStyle = col; c.fill();
+      c.strokeStyle = sk.id === 'tat' ? 'rgba(14,16,10,0.95)' : 'rgba(0,0,0,0.7)';
+      c.lineWidth = 1.2; c.stroke();
+      if (sk.glow) { c.globalAlpha = 0.4; c.strokeStyle = col; c.lineWidth = 4; c.stroke(); c.globalAlpha = 1; }
+      deck = sk.id === 'tat' ? '#12140e' : 'rgba(0,0,0,0.6)';
+    }
+    // superstructure + turrets
+    c.fillStyle = deck; c.strokeStyle = deck;
+    c.fillRect(-z * 0.5, -z * 0.2, z * 0.62, z * 0.4);
+    c.beginPath(); c.arc(z * 0.45, 0, z * 0.15, 0, Math.PI * 2); c.arc(-z * 0.72, 0, z * 0.12, 0, Math.PI * 2); c.fill();
+    c.lineWidth = Math.max(1, z * 0.09); c.lineCap = 'round';
+    c.beginPath(); c.moveTo(z * 0.45, 0); c.lineTo(z * 0.95, 0); c.stroke();
+    c.restore();
+    const hp = u.ext.hp as number | undefined, max = u.ext.maxHp as number | undefined;
+    if (typeof hp === 'number' && max && max > 0) {
+      const k = Math.max(0, Math.min(1, hp / max));
+      const w = Math.round(L * 1.05), h = 3, x0 = Math.round(sx - w / 2), y0 = Math.round(sy + L * 0.42);
+      c.fillStyle = sk.light ? 'rgba(20,22,26,0.75)' : 'rgba(0,0,0,0.7)';
+      c.fillRect(x0 - 1, y0 - 1, w + 2, h + 2);
+      c.fillStyle = k > 0.35 ? this.goodCol() : css(sk.hot);
+      c.fillRect(x0, y0, Math.max(1, Math.round(w * k)), h);
+    }
+  }
+
+  private advAimReason(): string | null {
+    const g = this.game, me = g.humanId, t = this.hoverTile, adv = g.adv, aim = this.aim;
+    if (!adv || !me || t < 0 || !aim) return null;
+    const key = `${aim.kind}|${t}|${g.tick}`;
+    if (key === this.advReasonKey) return this.advReason;
+    this.advReasonKey = key;
+    this.advReason = aim.kind === 'focus' ? adv.q.canAttackAt(me, t)
+      : aim.kind === 'fleet' ? adv.q.canSendFleet(me, t)
+      : aim.kind === 'capital' ? adv.q.canMoveCapital(me, t) : null;
+    return this.advReason;
+  }
+
+  private drawAdvAim(c: CanvasRenderingContext2D, sx: number, sy: number, ok: boolean, now: number): void {
+    const g = this.game, cam = this.cam, sk = this.skin, aim = this.aim!, me = g.humanId;
+    const col = ok ? sk.accent : this.refuseCol();
+    if (aim.kind === 'focus') {
+      const R = ADV.focusRadius * cam.scale;
+      c.fillStyle = col;
+      c.globalAlpha = ok ? 0.1 : 0.07;
+      c.beginPath(); c.arc(sx, sy, R, 0, Math.PI * 2); c.fill();
+      c.globalAlpha = ok ? 0.95 : 0.7;
+      c.strokeStyle = col; c.lineWidth = 2;
+      c.setLineDash(ok ? [8, 6] : [3, 6]);
+      c.lineDashOffset = -now * 0.03;
+      c.stroke();
+      c.setLineDash([]);
+      c.beginPath();
+      c.moveTo(sx - 10, sy); c.lineTo(sx - 3, sy); c.moveTo(sx + 3, sy); c.lineTo(sx + 10, sy);
+      c.moveTo(sx, sy - 10); c.lineTo(sx, sy - 3); c.moveTo(sx, sy + 3); c.lineTo(sx, sy + 10);
+      c.stroke();
+      c.globalAlpha = 1;
+    } else if (aim.kind === 'fleet') {
+      const R = ADV.patrolRadius * cam.scale;
+      // nearest own warship → target
+      let best: Unit | null = null, bd = Infinity;
+      const tx = g.xOf(this.hoverTile), ty = g.yOf(this.hoverTile);
+      for (const u of g.units) {
+        if (!u.alive || u.type !== 'warship' || u.owner !== me) continue;
+        const d = (u.x - tx) ** 2 + (u.y - ty) ** 2;
+        if (d < bd) { bd = d; best = u; }
+      }
+      c.strokeStyle = col; c.lineWidth = 2;
+      if (best) {
+        c.globalAlpha = 0.8;
+        c.setLineDash([4, 6]); c.lineDashOffset = -now * 0.03;
+        c.beginPath(); c.moveTo(cam.toScreenX(best.x + 0.5), cam.toScreenY(best.y + 0.5)); c.lineTo(sx, sy); c.stroke();
+      }
+      c.globalAlpha = ok ? 0.85 : 0.6;
+      c.setLineDash([3, 6]); c.lineDashOffset = -now * 0.01;
+      c.beginPath(); c.arc(sx, sy, R, 0, Math.PI * 2); c.stroke();
+      c.setLineDash([]);
+      c.globalAlpha = 1;
+      c.beginPath(); c.arc(sx, sy, 8, 0, Math.PI * 2); c.stroke();
+      c.beginPath(); c.arc(sx, sy, 3, 0, Math.PI * 2); c.fillStyle = col; c.fill();
+      c.beginPath();
+      for (const [qx, qy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { c.moveTo(sx + qx * 11, sy + qy * 11); c.lineTo(sx + qx * 16, sy + qy * 16); }
+      c.stroke();
+    } else {
+      // capital: highlight the human's finished cities
+      const pulse = 0.5 + 0.5 * Math.sin(now * 0.006);
+      const r0 = Math.max(10, Math.min(20, cam.scale * 2.6));
+      c.strokeStyle = sk.accent; c.lineWidth = 2;
+      for (const s of g.structures) {
+        if (s.owner !== me || s.type !== 'city' || s.readyTick > g.tick) continue;
+        const px = cam.toScreenX(s.x + 0.5), py = cam.toScreenY(s.y + 0.5);
+        if (px < -40 || py < -40 || px > cam.viewW + 40 || py > cam.viewH + 40) continue;
+        const hit = s.tile === this.hoverTile;
+        c.globalAlpha = hit ? 1 : 0.55 + 0.35 * pulse;
+        c.beginPath(); c.arc(px, py, r0 + (hit ? 4 : pulse * 3), 0, Math.PI * 2); c.stroke();
+      }
+      c.globalAlpha = 1;
+      const m = this.advMarker('cap', 'capital', ok ? me : 0, 16);
+      const mw = m.width / this.dpr;
+      c.globalAlpha = ok ? 1 : 0.6;
+      c.drawImage(m, sx + 6, sy - mw + 2, mw, mw);
+      c.globalAlpha = 1;
     }
   }
 

@@ -116,10 +116,12 @@ export function installAttacks(game: Game): void {
   };
   for (const s of game.structures) if (s.type === 'fort') addFort(s);
 
-  const R2 = ATK.fortRange * ATK.fortRange;
   const hasFort = (o: PlayerId, x: number, y: number): boolean => {
-    const cx0 = Math.max(0, ((x - ATK.fortRange) / CELL) | 0), cx1 = Math.min(CW - 1, ((x + ATK.fortRange) / CELL) | 0);
-    const cy0 = Math.max(0, ((y - ATK.fortRange) / CELL) | 0), cy1 = Math.min(CH - 1, ((y + ATK.fortRange) / CELL) | 0);
+    // hook fortRadiusMul: ×1 exactly in classic matches (range 12, R2 144 as before)
+    const fr = ATK.fortRange * game.hmul(game.hooks.fortRadiusMul, o);
+    const R2 = fr * fr;
+    const cx0 = Math.max(0, ((x - fr) / CELL) | 0), cx1 = Math.min(CW - 1, ((x + fr) / CELL) | 0);
+    const cy0 = Math.max(0, ((y - fr) / CELL) | 0), cy1 = Math.min(CH - 1, ((y + fr) / CELL) | 0);
     const tick = game.tick;
     for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) {
       const arr = fortCells[cy * CW + cx];
@@ -134,6 +136,7 @@ export function installAttacks(game: Game): void {
     return false;
   };
 
+  /** Classic defence of a tile (terrain, forts, traitor), without the advanced defenseMul hook. */
   const defenseAt = (i: Tile): number => {
     if (i < 0 || i >= N) return 1;
     let d = TERRAIN_DEF[terrain[i]];
@@ -144,7 +147,12 @@ export function installAttacks(game: Game): void {
     }
     return d;
   };
-  game.q.defenseAt = defenseAt;
+  // Query: classic defence × hook defenseMul (attacker unknown = 0). ×1 exactly in classic matches.
+  game.q.defenseAt = (i: Tile): number => {
+    const d = defenseAt(i);
+    if (i < 0 || i >= N) return d;
+    return d * game.hmul(game.hooks.defenseMul, i, owner[i], 0);
+  };
 
   // ── helpers ───────────────────────────────────────────────────────────────
   /** Cheap deterministic per-(tile, attack) jitter in [0,1). */
@@ -165,8 +173,17 @@ export function installAttacks(game: Game): void {
   const enqueue = (st: AtkState, t: number, p: number) => {
     const id = st.a.id;
     if (queued[t] === id) return;
+    // hook attackTileCost: extra flood priority, Infinity = never taken by this attack (focused attacks). 0 in classic.
+    const extra = game.hadd(game.hooks.attackTileCost, st.a, t);
+    if (extra === Infinity) return;
     queued[t] = id;
-    st.heap.push(p + STEP_FIXED - Math.log(1 - jitter(t, id)) * STEP_EXP + prioExtra(t), t);
+    st.heap.push(p + STEP_FIXED - Math.log(1 - jitter(t, id)) * STEP_EXP + prioExtra(t) + extra, t);
+  };
+  /** Empties an attack's frontier (used when a focused attack moves its focus). */
+  const clearHeap = (st: AtkState) => {
+    const h = st.heap, id = st.a.id;
+    for (let k = 0; k < h.size; k++) if (queued[h.tl[k]] === id) queued[h.tl[k]] = 0;
+    h.size = 0;
   };
 
   /** Scans the attacker's border for target tiles; pushes them. Returns how many were found. */
@@ -188,10 +205,13 @@ export function installAttacks(game: Game): void {
     return found;
   };
 
-  const tileCost = (t: number, target: PlayerId, density: number, mult: number) => {
+  const tileCost = (t: number, target: PlayerId, density: number, mult: number, a: Attack) => {
     const f = fallout[t] ? 1 + (ATK.falloutCost * fallout[t]) / 255 : 1;
-    if (!target) return ATK.freeCost * TERRAIN_DEF[terrain[t]] * f;
-    return (ATK.playerBase + density * mult) * defenseAt(t) * f;
+    // hooks defenseMul / attackMul: both exactly 1 in classic matches, so x·1 and x/1 leave the value bit-identical.
+    const dm = game.hmul(game.hooks.defenseMul, t, target, a.attacker);
+    const am = game.hmul(game.hooks.attackMul, a, t);
+    if (!target) return ATK.freeCost * TERRAIN_DEF[terrain[t]] * dm * f / am;
+    return (ATK.playerBase + density * mult) * (defenseAt(t) * dm) * f / am;
   };
 
   const endAttack = (st: AtkState, refund: number) => {
@@ -213,13 +233,19 @@ export function installAttacks(game: Game): void {
     if (target) {
       const T = game.players[target];
       if (!T || !T.alive || game.areAllied(attacker, target)) return false;
+      if (game.hwhy(game.hooks.forbidAttack, attacker, target)) return false; // pacts etc. (empty in classic)
     }
     if (!(troops >= ATK.minTroops) || troops > A.troops + 1e-6) return false;
     return true;
   };
 
   // ── commands ──────────────────────────────────────────────────────────────
-  game.cmd.attack = (attacker, target, troops) => {
+  /**
+   * Launches or reinforces the attack (attacker → target). `focus` = advanced focused attack: stored as
+   * attack.ext.focus, the frontier is rebuilt so that the attackTileCost hook (adv/front.ts) can restrict it.
+   * focus null = whole border (clears a previous focus). Classic matches only ever pass null.
+   */
+  const launch = (attacker: PlayerId, target: PlayerId, troops: number, focus: { x: number; y: number } | null): boolean => {
     troops = Math.floor(troops);
     if (!canAttack(attacker, target, troops)) return false;
     const A = game.players[attacker];
@@ -228,6 +254,11 @@ export function installAttacks(game: Game): void {
     if (existing && existing.a.alive) {
       // reinforcement: pick up new border segments (e.g. a fresh beachhead)
       const base = existing.heap.size ? existing.heap.minP() : existing.heap.lastP;
+      if (focus || existing.a.ext.focus) {
+        // focus set, moved or cleared: rebuild the frontier under the new restriction
+        if (focus) existing.a.ext.focus = { x: focus.x, y: focus.y }; else delete existing.a.ext.focus;
+        clearHeap(existing);
+      }
       const before = existing.heap.size;
       scanFrontier(existing, attacker, target, base);
       if (existing.heap.size === 0 && before === 0) return false;
@@ -240,13 +271,18 @@ export function installAttacks(game: Game): void {
     A.troops -= troops;
     const a: Attack = { id: game.newId(), attacker, target, troops, startTroops: troops, alive: true, ext: {} };
     const st: AtkState = { a, heap: new TileHeap(), budget: 0, lastTile: -1, conqueredSinceCheck: 0 };
+    if (focus) a.ext.focus = { x: focus.x, y: focus.y };
     scanFrontier(st, attacker, target, 0);
+    if (focus && st.heap.size === 0) { clearHeap(st); A.troops += troops; return false; } // nothing within the focus
     states.set(a.id, st);
     byPair.set(pairKey(attacker, target), st);
     game.attacks.push(a);
     game.emit({ type: 'attackStarted', attack: a });
     return true;
   };
+  game.cmd.attack = (attacker, target, troops) => launch(attacker, target, troops, null);
+  /** For adv/front.ts (focused attacks). */
+  game.ext.attacks = { launch, attackOf: (attacker: PlayerId, target: PlayerId) => byPair.get(pairKey(attacker, target))?.a ?? null };
 
   game.cmd.retreat = (id) => {
     const st = states.get(id);
@@ -388,6 +424,8 @@ export function installAttacks(game: Game): void {
         const A = players[a.attacker];
         if (!A.alive) { endAttack(st, 0); continue; }
         if (a.target && (!players[a.target].alive || game.areAllied(a.attacker, a.target))) { endAttack(st, a.troops); continue; }
+        // a pact/truce formed meanwhile (advanced; hook list empty in classic): call the attack off, troops return
+        if (a.target && (game.tick + a.id) % 10 === 0 && game.hwhy(game.hooks.forbidAttack, a.attacker, a.target)) { endAttack(st, a.troops); continue; }
         if (a.target) {
           const opp = byPair.get(pairKey(a.target, a.attacker));
           if (opp && opp.a.alive && opp.a.troops > 0 && a.troops > 0) {
@@ -408,7 +446,8 @@ export function installAttacks(game: Game): void {
         const heap = st.heap;
         if (heap.size === 0) {
           // re-scan once (frontier may have reappeared, e.g. we regained a border tile)
-          if (!scanFrontier(st, a.attacker, a.target, heap.lastP)) { endAttack(st, a.troops); continue; }
+          // (heap.size check: a focused attack may find border tiles that all lie outside its focus)
+          if (!scanFrontier(st, a.attacker, a.target, heap.lastP) || heap.size === 0) { endAttack(st, a.troops); continue; }
         }
         const target = a.target;
         const T = target ? players[target] : null;
@@ -428,7 +467,7 @@ export function installAttacks(game: Game): void {
             if (++skips > 4000) break;
             continue;
           }
-          const cost = tileCost(t, target, density, mult);
+          const cost = tileCost(t, target, density, mult, a);
           if (a.troops < cost) {
             // not enough left for this tile: the remainder is spent against it
             if (T) T.troops = Math.max(0, T.troops - a.troops * ATK.defLoss / Math.max(1, mult));

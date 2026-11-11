@@ -150,3 +150,99 @@ export const STRUCTURE_HINT: Record<StructureType, string> = {
 };
 
 export const STRUCTURE_KEY: Record<StructureType, string> = { city: 'C', port: 'P', fort: 'F', factory: 'B', silo: 'L', sam: 'M' };
+
+// ── advanced mode glyphs (same unit box, same style) ──────────────────────────
+export type AdvGlyph = 'oil' | 'iron' | 'uranium' | 'capital' | 'warship';
+
+function oil(c: G): void {
+  // drop
+  c.beginPath();
+  c.moveTo(0, -0.95);
+  c.bezierCurveTo(0.22, -0.6, 0.72, -0.1, 0.72, 0.3);
+  c.arc(0, 0.3, 0.72, 0, Math.PI);
+  c.bezierCurveTo(-0.72, -0.1, -0.22, -0.6, 0, -0.95);
+  c.fill();
+  c.globalCompositeOperation = 'destination-out';
+  c.lineWidth = 0.16; c.lineCap = 'round';
+  c.beginPath(); c.arc(0, 0.3, 0.42, Math.PI * 0.55, Math.PI * 0.95); c.stroke();
+  c.globalCompositeOperation = 'source-over';
+}
+
+function iron(c: G): void {
+  // three stacked ingots
+  const ingot = (x: number, y: number) => {
+    c.moveTo(x - 0.46, y + 0.26); c.lineTo(x - 0.32, y - 0.2); c.lineTo(x + 0.32, y - 0.2); c.lineTo(x + 0.46, y + 0.26); c.closePath();
+  };
+  c.beginPath();
+  ingot(-0.48, 0.58); ingot(0.48, 0.58); ingot(0, -0.02);
+  c.fill();
+  c.lineWidth = 0.12; c.lineCap = 'round';
+  c.beginPath(); c.moveTo(-0.3, -0.48); c.lineTo(0.3, -0.48); c.moveTo(-0.16, -0.72); c.lineTo(0.16, -0.72); c.stroke();
+}
+
+function uranium(c: G): void {
+  // radiation trefoil
+  c.beginPath();
+  for (let k = 0; k < 3; k++) {
+    const a = -Math.PI / 2 + k * (Math.PI * 2 / 3);
+    c.moveTo(Math.cos(a - 0.52) * 0.3, Math.sin(a - 0.52) * 0.3);
+    c.arc(0, 0, 0.92, a - 0.52, a + 0.52);
+    c.arc(0, 0, 0.3, a + 0.52, a - 0.52, true);
+    c.closePath();
+  }
+  c.moveTo(0.17, 0); c.arc(0, 0, 0.17, 0, Math.PI * 2);
+  c.fill();
+}
+
+function capital(c: G): void {
+  c.beginPath();
+  for (let k = 0; k < 10; k++) {
+    const r = k & 1 ? 0.42 : 1, a = -Math.PI / 2 + (k * Math.PI) / 5;
+    if (k) c.lineTo(Math.cos(a) * r, Math.sin(a) * r + 0.06); else c.moveTo(Math.cos(a) * r, Math.sin(a) * r + 0.06);
+  }
+  c.closePath();
+  c.fill();
+}
+
+function warship(c: G): void {
+  // side view: hull, superstructure, mast, gun
+  c.beginPath();
+  c.moveTo(-0.98, 0.22); c.lineTo(0.98, 0.22); c.lineTo(0.72, 0.62); c.lineTo(-0.78, 0.62); c.closePath();
+  c.rect(-0.42, -0.12, 0.62, 0.36);
+  c.rect(-0.22, -0.4, 0.3, 0.3);
+  c.rect(-0.1, -0.86, 0.08, 0.5);
+  c.rect(0.3, 0.02, 0.26, 0.2);
+  c.fill();
+  c.lineWidth = 0.1; c.lineCap = 'round';
+  c.beginPath(); c.moveTo(0.5, 0.08); c.lineTo(0.9, -0.06); c.moveTo(-0.6, 0.14); c.lineTo(-0.86, 0.04); c.stroke();
+}
+
+const ADV_DRAW: Record<AdvGlyph, (c: G) => void> = { oil, iron, uranium, capital, warship };
+
+export function drawAdvGlyph(c: G, kind: AdvGlyph, cx: number, cy: number, half: number, color: string): void {
+  c.save();
+  c.translate(cx, cy);
+  c.scale(half, half);
+  c.fillStyle = color;
+  c.strokeStyle = color;
+  ADV_DRAW[kind](c);
+  c.restore();
+}
+
+/** Data URL of an advanced glyph (48 px, transparent background) for DOM use — same style as glyphURL. */
+export function advGlyphURL(kind: AdvGlyph, color = '#e8eef7'): string {
+  const key = 'adv:' + kind + color;
+  let u = urlCache.get(key);
+  if (!u) {
+    const s = document.createElement('canvas');
+    s.width = s.height = 48;
+    drawAdvGlyph(s.getContext('2d')!, kind, 24, 24, 48 * 0.42, color);
+    u = s.toDataURL();
+    urlCache.set(key, u);
+  }
+  return u;
+}
+
+export const ADV_GLYPH_LABEL: Record<AdvGlyph, string> = {
+  oil: 'Petrolio', iron: 'Ferro', uranium: 'Uranio', capital: 'Capitale', warship: 'Nave da guerra',
+};

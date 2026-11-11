@@ -422,7 +422,8 @@ export function installNaval(game: Game): void {
   function maxBoats(p: PlayerId): number {
     let n = BASE_BOATS;
     for (const s of ports) if (s.owner === p && s.readyTick <= game.tick) n++;
-    return n;
+    // advanced hook (empty in classic matches: adds exactly 0)
+    return n + game.hadd(game.hooks.boatCapAdd, p);
   }
   const d2 = (a: Tile, b: Tile) => {
     const ax = a % W, bx = b % W;
@@ -492,6 +493,7 @@ export function installNaval(game: Game): void {
     const o = owner[target];
     if (o === p) return 'È già tuo';
     if (game.areAllied(p, o)) return 'È un tuo alleato';
+    if (o) { const why = game.hwhy(game.hooks.forbidAttack, p, o); if (why) return why; }
     if ((boatsAtSea.get(p) ?? 0) >= maxBoats(p)) return 'Troppe navi in mare';
     if (pl.troops < MIN_BOAT_TROOPS) return 'Truppe insufficienti';
     const plan = planFor(p, target);
@@ -506,10 +508,12 @@ export function installNaval(game: Game): void {
     let plan = planFor(p, target);
     if (typeof plan === 'string') return false;
     // cached plan may be a few ticks stale: re-check ownership, recompute if needed
-    if (owner[plan.depart] !== p || owner[plan.land] === p || game.areAllied(p, owner[plan.land])) {
+    if (owner[plan.depart] !== p || owner[plan.land] === p || game.areAllied(p, owner[plan.land]) ||
+      (owner[plan.land] && game.hwhy(game.hooks.forbidAttack, p, owner[plan.land]))) {
       coastCache.delete(p);
       plan = makePlan(p, target);
       if (typeof plan === 'string') return false;
+      if (owner[plan.land] && game.hwhy(game.hooks.forbidAttack, p, owner[plan.land])) return false;
       planCache.set(p * N + target, plan);
     }
     const path = nav.route(plan.startW, plan.endW);
@@ -519,7 +523,7 @@ export function installNaval(game: Game): void {
     u.x = plan.startW % W; u.y = (plan.startW / W) | 0;
     u.ext.path = path;
     u.ext.pathIndex = 1;
-    u.ext.speed = BOAT_SPEED;
+    u.ext.speed = BOAT_SPEED * game.hmul(game.hooks.boatSpeedMul, p); // ×1 exactly in classic matches
     u.ext.target = target;
     u.ext.length = routeLength(W, path);
     transports.push(u);
@@ -548,7 +552,7 @@ export function installNaval(game: Game): void {
   function land(u: Unit): void {
     const p = u.owner, pl = game.players[p], L = u.toTile, o = owner[L];
     const lx = L % W, ly = (L / W) | 0;
-    if (o === p || game.areAllied(p, o)) {
+    if (o === p || game.areAllied(p, o) || (o && game.hwhy(game.hooks.forbidAttack, p, o))) {
       pl.troops += u.troops;
       game.emit({ type: 'boatLanded', owner: p, tile: L, troops: u.troops });
       return;
@@ -603,7 +607,7 @@ export function installNaval(game: Game): void {
   const foreign: Structure[] = [];
   const own: Structure[] = [];
   function tryTrade(s: Structure, st: PortState): void {
-    if (trades.length >= MAX_TRADE_SHIPS || st.out >= TRADE_PER_PORT || st.comps.length === 0) {
+    if (trades.length >= MAX_TRADE_SHIPS || st.out >= TRADE_PER_PORT || st.comps.length === 0 || game.hany(game.hooks.portBlocked, s)) {
       st.next = game.tick + 50; return;
     }
     foreign.length = 0; own.length = 0;
@@ -613,6 +617,7 @@ export function installNaval(game: Game): void {
       const d = ports.length <= 16 ? ports[k] : ports[Math.floor(game.rng() * ports.length)];
       if (d === s || d.readyTick > game.tick || !game.players[d.owner].alive) continue;
       if (embargoed(so, d.owner)) continue;
+      if (game.hany(game.hooks.portBlocked, d)) continue;
       const dst = portState(d);
       let shared = false;
       for (const c of dst.comps) if (st.comps.includes(c)) { shared = true; break; }
@@ -649,6 +654,7 @@ export function installNaval(game: Game): void {
   function arriveTrade(u: Unit): void {
     const d = u.ext.dstPort as Structure, so = u.owner, dO = d.owner;
     if (!game.players[so].alive || !game.players[dO].alive || embargoed(so, dO)) return;
+    if (game.hany(game.hooks.portBlocked, d) || game.hany(game.hooks.portBlocked, u.ext.srcPort as Structure)) return;
     const pay = tradePay(u.ext.length as number);
     if (so === dO) game.players[so].gold += Math.round(pay * 0.5);
     else { game.players[so].gold += pay; game.players[dO].gold += pay; }
@@ -682,7 +688,7 @@ export function installNaval(game: Game): void {
       for (let k = transports.length - 1; k >= 0; k--) {
         const u = transports[k];
         let done = !u.alive || !game.players[u.owner].alive;
-        if (!done && advance(u, BOAT_SPEED)) { land(u); done = true; }
+        if (!done && advance(u, u.ext.speed as number)) { land(u); done = true; }
         if (done) {
           if (u.alive) game.removeUnit(u);
           boatsAtSea.set(u.owner, Math.max(0, (boatsAtSea.get(u.owner) ?? 1) - 1));

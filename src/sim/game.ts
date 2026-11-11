@@ -5,6 +5,7 @@ import {
   type Player, type PlayerId, type PlayerKind, type Queries, type Structure, type StructureType,
   type System, type Tile, type Unit, type UnitType,
 } from './types';
+import type { Adv, Hooks } from './adv/types';
 
 export function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -58,6 +59,42 @@ export class Game {
   /** When true, every tile whose colour may have changed is pushed to `changed` (renderer drains it). */
   trackChanges = false;
   changed: Tile[] = [];
+
+  /** True in advanced matches. Classic systems must behave exactly as before when this is false. */
+  advanced = false;
+  /** Advanced-mode state and API (null in classic matches). See src/sim/adv/types.ts. */
+  adv: Adv | null = null;
+  /**
+   * Modifier hooks. Classic systems call them at fixed points; they are EMPTY in classic matches, so
+   * hmul() returns exactly 1, hadd() exactly 0 and hwhy() null. Advanced modules push functions in install*().
+   */
+  hooks: Hooks = {
+    attackMul: [], defenseMul: [], attackTileCost: [], troopCapMul: [], troopRateMul: [], goldRateMul: [], goldRateAdd: [],
+    forbidAttack: [], buildCostMul: [], fortRadiusMul: [], boatCapAdd: [], boatSpeedMul: [], portBlocked: [],
+    forbidNuke: [], nukeCostMul: [], samChanceAdd: [],
+  };
+  /** Product of all hook results (1 when the list is empty). */
+  hmul<A extends unknown[]>(fns: ((...a: A) => number)[], ...a: A): number {
+    let m = 1;
+    for (let i = 0; i < fns.length; i++) m *= fns[i](...a);
+    return m;
+  }
+  /** Sum of all hook results (0 when the list is empty). */
+  hadd<A extends unknown[]>(fns: ((...a: A) => number)[], ...a: A): number {
+    let m = 0;
+    for (let i = 0; i < fns.length; i++) m += fns[i](...a);
+    return m;
+  }
+  /** First non-null reason (null when the list is empty or nobody objects). */
+  hwhy<A extends unknown[]>(fns: ((...a: A) => string | null)[], ...a: A): string | null {
+    for (let i = 0; i < fns.length; i++) { const r = fns[i](...a); if (r) return r; }
+    return null;
+  }
+  /** True if any hook says so (false when the list is empty). */
+  hany<A extends unknown[]>(fns: ((...a: A) => boolean)[], ...a: A): boolean {
+    for (let i = 0; i < fns.length; i++) if (fns[i](...a)) return true;
+    return false;
+  }
 
   cmd: Commands = {
     attack: () => false,

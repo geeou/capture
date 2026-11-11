@@ -38,7 +38,8 @@ export function installNukes(game: Game): void {
   }
 
   const validKind = (k: string): k is NukeKind => k === 'atom' || k === 'hydrogen';
-  const nukeCost = (_p: PlayerId, kind: NukeKind) => NUKE_COST[kind] ?? Infinity;
+  // advanced hook nukeCostMul (empty in classic matches: ×1 exactly)
+  const nukeCost = (p: PlayerId, kind: NukeKind) => (NUKE_COST[kind] ?? Infinity) * game.hmul(game.hooks.nukeCostMul, p, kind);
   const nukeRadius = (kind: NukeKind) => NUKE_RADIUS[kind] ?? 0;
 
   function readySilo(p: PlayerId, target: Tile): Structure | null | 'reload' {
@@ -62,10 +63,13 @@ export function installNukes(game: Game): void {
     const o = owner[target];
     if (o === p) return 'È il tuo territorio';
     if (game.areAllied(p, o)) return 'È un tuo alleato';
+    if (o) { const why = game.hwhy(game.hooks.forbidAttack, p, o); if (why) return why; }
+    const forbid = game.hwhy(game.hooks.forbidNuke, p, kind);
+    if (forbid) return forbid;
     const silo = readySilo(p, target);
     if (silo === null) return 'Nessun silo';
     if (silo === 'reload') return 'Silo in ricarica';
-    if (pl.gold < NUKE_COST[kind]) return 'Oro insufficiente';
+    if (pl.gold < nukeCost(p, kind)) return 'Oro insufficiente';
     return null;
   }
 
@@ -73,7 +77,7 @@ export function installNukes(game: Game): void {
     if (canNuke(p, kind, target) !== null) return false;
     const silo = readySilo(p, target) as Structure;
     const pl = game.players[p];
-    pl.gold -= NUKE_COST[kind];
+    pl.gold -= nukeCost(p, kind);
     silo.cooldownUntil = game.tick + SILO_RELOAD;
     const tx = target % W, ty = (target / W) | 0;
     const u = game.addUnit(kind, p, silo.tile, target, 0);
@@ -109,7 +113,7 @@ export function installNukes(game: Game): void {
       if (game.structureAt.get(s.tile) !== s || !game.players[s.owner].alive) continue;
       if (!samCares(s, u)) continue;
       s.cooldownUntil = game.tick + SAM_RELOAD;
-      if (game.rng() < SAM_ODDS[u.type as NukeKind]) {
+      if (game.rng() < SAM_ODDS[u.type as NukeKind] + game.hadd(game.hooks.samChanceAdd, s.owner)) {
         game.removeUnit(u);
         game.emit({ type: 'nukeIntercepted', x: u.x, y: u.y, owner: u.owner });
         const sx = Math.round(u.x), sy = Math.round(u.y);

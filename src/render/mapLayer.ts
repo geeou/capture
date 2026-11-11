@@ -7,6 +7,8 @@ import { WATER } from '../sim/types';
 import type { Game } from '../sim/game';
 import { REL_PRIO, R_ENEMY, R_ME, css, pk, pkc, type RGB, type Skin } from './skins';
 import type { Relations } from './relations';
+import type { Adv } from '../sim/adv/types';
+import { fogOf, type FogState } from '../sim/adv/fog';
 
 const CH = 64; // dirty chunk size (tiles)
 const WK = 0xffff; // "water" pseudo-owner for border checks
@@ -51,9 +53,14 @@ export class MapLayer {
   private falloutC: RGB = [0, 0, 0];
   /** Bumped whenever pixels change (minimap uses it). */
   version = 0;
+  // advanced mode only (null in classic matches: the classic paint path is untouched)
+  private adv: Adv | null = null;
+  private fog: FogState | null = null;
+  private fogT = new Float32Array(8);
 
   constructor(private game: Game, private skin: Skin, private relations: Relations) {
     const { W, H, N } = game;
+    if (game.advanced && game.adv) { this.adv = game.adv; this.fog = fogOf(game); }
     const mk = (w: number, h: number) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
     this.canvas = mk(W, H);
     this.borders = mk(W, H);
@@ -112,6 +119,9 @@ export class MapLayer {
     this.coastPk = skin.coast ? pkc(skin.coast) : 0;
     this.frontPk = pkc(skin.front);
     this.falloutC = skin.fallout;
+    const ft = this.fogT;
+    ft[0] = skin.fogTint[0]; ft[1] = skin.fogTint[1]; ft[2] = skin.fogTint[2];
+    ft[3] = skin.fogDesat; ft[4] = skin.fogK; ft[5] = skin.fogK2;
     this.known = 0;
     this.syncPlayers();
     this.fullPaint();
@@ -148,6 +158,7 @@ export class MapLayer {
   }
 
   private paint(i: number): void {
+    if (this.adv) { this.paintAdv(i); return; }
     const g = this.game, s = this.skin;
     const t = g.terrain[i];
     const W = g.W, x = i % W, y = (i - x) / W;
@@ -195,6 +206,82 @@ export class MapLayer {
     this.bpx[i] = b;
   }
 
+  /** Owner shown on a tile: the real one inside vision, the remembered one in the fog. */
+  shownOwner(i: number): number {
+    const f = this.fog;
+    return f && !f.off && !f.visible[i] ? f.seenOwner[i] : this.game.owner[i];
+  }
+
+  /** Fogged version of a packed colour (desaturate, then mix towards the skin's fog tint). */
+  private fogPx(c: number, k: number): number {
+    const ft = this.fogT, d = ft[3];
+    const r = c & 255, gg = (c >> 8) & 255, b = (c >> 16) & 255;
+    const l = r * 0.3 + gg * 0.59 + b * 0.11;
+    const r1 = r + (l - r) * d, g1 = gg + (l - gg) * d, b1 = b + (l - b) * d;
+    return pk((r1 + (ft[0] - r1) * k) | 0, (g1 + (ft[1] - g1) * k) | 0, (b1 + (ft[2] - b1) * k) | 0);
+  }
+
+  /** Advanced-mode paint: owners seen through the fog, dimmed fog, hatched cut-off tiles. */
+  private paintAdv(i: number): void {
+    const g = this.game, s = this.skin, fog = this.fog && !this.fog.off ? this.fog : null;
+    const vis = fog ? fog.visible : null, seen = fog ? fog.seenOwner : null;
+    const t = g.terrain[i];
+    const W = g.W, x = i % W, y = (i - x) / W;
+    const hidden = !!vis && !vis[i];
+    let c: number, b = 0;
+    if (t === WATER) c = this.base[i];
+    else {
+      const ow = g.owner, ter = g.terrain, N = g.N;
+      const o = hidden ? seen![i] : ow[i];
+      if (o === 0) {
+        c = this.base[i];
+        if (this.coastPk && ((x > 0 && ter[i - 1] === WATER) || (x < W - 1 && ter[i + 1] === WATER) ||
+          (i >= W && ter[i - W] === WATER) || (i < N - W && ter[i + W] === WATER))) b = this.coastPk;
+      } else {
+        const rel = this.relations.rel, r = rel[o];
+        const hatch = (r === R_ME && s.hatchMe(x, y)) || (r === R_ENEMY && s.hatchEn(x, y));
+        c = hatch ? this.alt[o] : this.fill[o * 4 + t];
+        const po = REL_PRIO[r];
+        for (let k = 0; k < 4; k++) {
+          let j: number;
+          if (k === 0) { if (x === 0) continue; j = i - 1; }
+          else if (k === 1) { if (x === W - 1) continue; j = i + 1; }
+          else if (k === 2) { if (i < W) continue; j = i - W; }
+          else { if (i >= N - W) continue; j = i + W; }
+          const q = ter[j] === WATER ? WK : vis && !vis[j] ? seen![j] : ow[j];
+          if (q === o) continue;
+          if (q === WK || q === 0) { if (!b) b = this.edge[o]; continue; }
+          const rq = rel[q], pq = REL_PRIO[rq];
+          if (po > pq || (po === pq && o < q)) {
+            if (!hidden && ((r === R_ME && rq === R_ENEMY) || (r === R_ENEMY && rq === R_ME))) { b = this.frontPk; break; }
+            b = this.edge[o];
+          }
+        }
+        // cut off from supply (visible tiles only): tile-space hatch + slight dim
+        if (!hidden && this.adv!.cut[i]) {
+          const cc = s.cut, kk = ((x + y) & 3) === 0 ? s.cutK : 0.18;
+          const r0 = c & 255, g0 = (c >> 8) & 255, b0 = (c >> 16) & 255;
+          c = pk((r0 + (cc[0] - r0) * kk) | 0, (g0 + (cc[1] - g0) * kk) | 0, (b0 + (cc[2] - b0) * kk) | 0);
+        }
+      }
+    }
+    const f = g.fallout[i];
+    if (f > 0) {
+      const k = 0.35 + 0.45 * (f / 255);
+      const [fr, fg, fb] = this.falloutC;
+      const r0 = c & 255, g0 = (c >> 8) & 255, b0 = (c >> 16) & 255;
+      const d = ((x + y) & 3) === 0 ? 0.7 : 1;
+      c = pk(((r0 + (fr - r0) * k) * d) | 0, ((g0 + (fg - g0) * k) * d) | 0, ((b0 + (fb - b0) * k) * d) | 0);
+    }
+    if (hidden) {
+      const k = fog!.explored[i] ? this.fogT[4] : this.fogT[5];
+      c = this.fogPx(c, k);
+      if (b) b = this.fogPx(b, k * 0.8);
+    }
+    this.px[i] = c;
+    this.bpx[i] = b;
+  }
+
   fullPaint(): void {
     this.syncPlayers();
     const N = this.game.N;
@@ -222,15 +309,20 @@ export class MapLayer {
     if (this.frame === 0xffffffff) { this.stamp.fill(0); this.frame = 1; }
   }
 
-  /** Repaint changed tiles plus their 4 neighbours (border state shifts with them). */
-  apply(changed: number[]): void {
+  /**
+   * Repaint changed tiles plus their 4 neighbours (border state shifts with them).
+   * `skipHidden` (advanced, fog on): ignore tiles outside vision — the map keeps showing what was last seen.
+   */
+  apply(changed: number[], skipHidden = false): void {
     if (!changed.length) return;
     this.syncPlayers();
     this.nextFrame();
     const W = this.game.W, N = this.game.N;
+    const vis = skipHidden && this.fog && !this.fog.off ? this.fog.visible : null;
     for (let k = 0; k < changed.length; k++) {
       const i = changed[k];
       if (i < 0 || i >= N) continue;
+      if (vis && !vis[i]) continue;
       this.touch(i);
       const x = i % W;
       if (x > 0) this.touch(i - 1);
@@ -250,7 +342,22 @@ export class MapLayer {
     for (const id of ids) { if (id < ps.length) { flag[id] = 1; this.lookOf(id); } }
     this.nextFrame();
     const ow = g.owner, N = g.N, W = g.W;
-    for (let i = 0; i < N; i++) if (flag[ow[i]]) this.touch(i);
+    const fog = this.fog && !this.fog.off ? this.fog : null;
+    if (fog) {
+      // fogged tiles are drawn with their remembered owner: recolour those (and the borders around them)
+      const vis = fog.visible, seen = fog.seenOwner;
+      for (let i = 0; i < N; i++) {
+        if (vis[i]) { if (flag[ow[i]]) this.touch(i); continue; }
+        const o = seen[i];
+        if (!flag[o]) continue;
+        this.touch(i);
+        const x = i % W;
+        if (x > 0) this.touch(i - 1);
+        if (x < W - 1) this.touch(i + 1);
+        if (i >= W) this.touch(i - W);
+        if (i < N - W) this.touch(i + W);
+      }
+    } else for (let i = 0; i < N; i++) if (flag[ow[i]]) this.touch(i);
     for (const id of ids) {
       const p = ps[id];
       if (!p) continue;

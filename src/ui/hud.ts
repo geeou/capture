@@ -4,6 +4,8 @@ import { WIN_SHARE, TICKS_PER_SEC, type GameEvent, type Player } from '../sim/ty
 import { h, setText } from './dom';
 import { clock, fmt, fmtRate, hexColor, KIND_LABEL, pct } from './format';
 import type { Actions, Ctl } from './actions';
+import { PACT_LABEL } from '../sim/adv/types';
+import { advGoldRate, playerSeen, repWord, troopsTxt } from './adv';
 
 interface LogEntry { el: HTMLElement; t: number }
 
@@ -18,6 +20,8 @@ export class Hud {
   private tShare = h('b'); private tShareBar = h('i'); private tShareLbl = h('span', { class: 'dim' });
   private tClock = h('b', { class: 'clock' });
   private tWho = h('span', { class: 'who' });
+  /** "AVANZATA" tag (advanced matches only). */
+  private tAdv = h('span', { class: 'adv-tag top hidden', title: 'Partita avanzata' }, 'Avanzata');
   private speedBtns: HTMLButtonElement[] = [];
   /** Touch-only top-bar buttons (names, fullscreen…), filled by the mobile layer; hidden on desktop by CSS. */
   readonly touchSlot = h('div', { class: 'tb-touch' });
@@ -27,6 +31,8 @@ export class Hud {
   private ratioPct = h('b');
   private ratioAbs = h('span');
   private ratioBox!: HTMLElement;
+  /** Head row of the ratio panel (the advanced layer adds its front toggle here). */
+  ratioHead!: HTMLElement;
   // leaderboard
   private lbRows: { el: HTMLElement; rank: HTMLElement; sw: HTMLElement; name: HTMLElement; badge: HTMLElement; share: HTMLElement; troops: HTMLElement; id: number }[] = [];
   private lbCount = h('span', { class: 'dim' });
@@ -36,17 +42,21 @@ export class Hud {
   private card = h('div', { class: 'panel pcard hidden' });
   private cardFor = -1;
   // log
-  private logEl = h('div', { class: 'log' });
+  readonly logEl = h('div', { class: 'log' });
   private logs: LogEntry[] = [];
   // requests
   private reqEl = h('div', { class: 'requests' });
+  get requestsEl(): HTMLElement { return this.reqEl; }
   private reqs = new Map<number, HTMLElement>();
   // attacks
   private atkEl = h('div', { class: 'panel attacks hidden' });
+  get attacksEl(): HTMLElement { return this.atkEl; }
   private alarm = h('div', { class: 'alarm' });
   private atkSig = '';
 
   hoverPlayer = 0;
+  /** Ticks in which a message addressed to the human was logged (the advanced layer avoids duplicating them). */
+  readonly msgTicks = new Set<number>();
   /** Owner of the tile under the mouse (set by the app). */
   mapHover = 0;
   private lastTop = 0; private lastLb = 0; private lastAtk = 0; private lastCard = 0; private lastReq = 0;
@@ -87,6 +97,7 @@ export class Hud {
     );
     const top = h('div', { class: 'topbar panel' },
       h('div', { class: 'brand' }, 'CAPTURE'),
+      this.tAdv,
       this.tWho,
       this.stats,
       h('div', { class: 'stat time' }, h('span', { class: 'lbl' }, 'Tempo'), h('div', { class: 'val' }, this.tClock)),
@@ -106,7 +117,7 @@ export class Hud {
     const step = (d: number, label: string, txt: string) =>
       h('button', { class: 'ib rt-step', type: 'button', 'aria-label': label, onclick: () => this.c.setRatio(this.c.ratio + d) }, txt);
     this.ratioBox = h('div', { class: 'ratio panel' },
-      h('div', { class: 'ratio-head' },
+      this.ratioHead = h('div', { class: 'ratio-head' },
         h('span', { class: 'lbl' }, 'Forza d’attacco'),
         h('span', { class: 'ratio-val' }, this.ratioPct, this.ratioAbs),
         h('span', { class: 'keys' }, h('kbd', null, 'Q'), h('kbd', null, 'E'))),
@@ -146,6 +157,7 @@ export class Hud {
     this.atkEl.classList.add('hidden');
     this.alarm.classList.remove('on');
     const spectator = !game.humanId;
+    this.tAdv.classList.toggle('hidden', !game.advanced);
     this.root.classList.toggle('spectator', spectator);
     this.ratioBox.classList.toggle('hidden', spectator);
     game.on(ev => { if (this.game === game) this.onEvent(ev); });
@@ -186,6 +198,7 @@ export class Hud {
     const me = g.humanId;
     if (ev.type === 'message') {
       if (ev.to !== undefined && ev.to !== me) return;
+      if (ev.to === me) { this.msgTicks.add(g.tick); if (this.msgTicks.size > 64) this.msgTicks.delete(this.msgTicks.values().next().value!); }
       this.addLog(ev.text, ev.level, ev.x, ev.y);
     } else if (ev.type === 'allianceRequest' && me && ev.request.to === me) {
       this.addRequest(ev.request.id, ev.request.from);
@@ -275,7 +288,7 @@ export class Hud {
       setText(this.tTroopRate, `${fmtRate(g.q.troopRate(p.id) * TICKS_PER_SEC)}/s`);
       this.tTroopBar.style.width = `${cap > 0 ? Math.min(100, (p.troops / cap) * 100) : 0}%`;
       setText(this.tGold, fmt(p.gold));
-      setText(this.tGoldRate, `${fmtRate(g.q.goldRate(p.id) * TICKS_PER_SEC)}/s`);
+      setText(this.tGoldRate, `${fmtRate((g.adv ? advGoldRate(g, p.id) : g.q.goldRate(p.id)) * TICKS_PER_SEC)}/s`);
       const sh = g.share(p.id);
       setText(this.tShare, pct(sh));
       setText(this.tShareLbl, ` · ${fmt(p.tiles)}`);
@@ -311,7 +324,7 @@ export class Hud {
       setText(r.badge, traitor ? 'TRADITORE' : allied ? 'ALLEATO' : '');
       r.badge.className = `bdg${traitor ? ' tr' : allied ? ' al' : ''}`;
       setText(r.share, pct(g.share(p.id)));
-      setText(r.troops, fmt(p.troops));
+      setText(r.troops, troopsTxt(g, p));
       r.el.classList.toggle('me', p.id === meId);
       r.el.classList.toggle('sel', p.id === this.c.renderer.selected);
       r.el.classList.toggle('gap', k === 10);
@@ -341,14 +354,28 @@ export class Hud {
       if (g.players[me].embargoes.has(id) || p.embargoes.has(me)) rel.push(h('div', { class: 'kv' }, h('span', null, 'Commercio'), h('b', { class: 'neg' }, 'Embargo')));
     }
     const traitor = p.traitorUntil > g.tick;
-    const atk = g.attacks.filter(a => a.alive && a.attacker === id).length;
+    const seen = playerSeen(g, id);
+    const atk = seen ? g.attacks.filter(a => a.alive && a.attacker === id).length : 0;
+    const adv = g.adv;
+    if (adv) {
+      const r = Math.round(adv.players[id]?.reputation ?? 0);
+      rel.push(h('div', { class: 'kv' }, h('span', null, 'Reputazione'), h('b', { class: r >= 10 ? 'pos' : r <= -10 ? 'neg' : '' }, `${repWord(r)} (${r > 0 ? '+' : ''}${r})`)));
+      if (me && id !== me) {
+        for (const pk of adv.pacts) {
+          if (!((pk.a === me && pk.b === id) || (pk.a === id && pk.b === me))) continue;
+          const left = pk.untilTick > 0 ? ` · ${clock(Math.max(0, pk.untilTick - g.tick))}` : '';
+          const role = pk.kind === 'tribute' ? (pk.a === me ? ' (tuo vassallo)' : ' (tuo signore)') : '';
+          rel.push(h('div', { class: 'kv' }, h('span', null, 'Patto'), h('b', { class: 'pos' }, `${PACT_LABEL[pk.kind]}${role}${left}`)));
+        }
+      }
+    }
     this.card.replaceChildren(
       h('div', { class: 'pc-head' },
         h('span', { class: 'sw big', style: `background:${hexColor(p.color)}` }),
         h('div', null, h('b', null, p.name), h('small', null, KIND_LABEL[p.kind] + (id === me ? ' · tu' : ''))),
         traitor ? h('span', { class: 'bdg tr' }, 'TRADITORE') : null),
       h('div', { class: 'kv' }, h('span', null, 'Terre'), h('b', null, `${fmt(p.tiles)} · ${pct(g.share(id))}`)),
-      h('div', { class: 'kv' }, h('span', null, 'Truppe'), h('b', null, fmt(p.troops))),
+      h('div', { class: 'kv' }, h('span', null, 'Truppe'), h('b', { title: seen ? '' : 'Fuori dalla tua vista' }, troopsTxt(g, p))),
       h('div', { class: 'kv' }, h('span', null, 'Oro'), h('b', null, fmt(p.gold))),
       h('div', { class: 'kv' }, h('span', null, 'Alleati'), h('b', null, String(p.allies.size))),
       ...(atk ? [h('div', { class: 'kv' }, h('span', null, 'Attacchi in corso'), h('b', null, String(atk)))] : []),

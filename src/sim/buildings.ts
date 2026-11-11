@@ -48,7 +48,8 @@ export function installBuildings(game: Game): void {
   const buildCost = (p: PlayerId, type: StructureType): number => {
     const base = BUILD.base[type];
     if (base === undefined) return Infinity;
-    return Math.round(base * (1 + BUILD.scale * game.countStructures(p, type)));
+    // hook buildCostMul: ×1 exactly in classic matches
+    return Math.round(base * (1 + BUILD.scale * game.countStructures(p, type)) * game.hmul(game.hooks.buildCostMul, p, type));
   };
 
   const canBuild = (p: PlayerId, type: StructureType, tile: Tile): string | null => {

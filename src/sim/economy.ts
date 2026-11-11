@@ -60,7 +60,9 @@ export function installEconomy(game: Game): void {
     if (!p || !p.alive) return 0;
     fresh();
     const kind = p.kind === 'tribe' ? ECON.tribeMul : 1;
-    return (ECON.capBase + ECON.capMul * landPow(p.tiles)) * (1 + ECON.cityBonus * cityWeight(cities[id])) * kind;
+    // hook troopCapMul: ×1 exactly in classic matches
+    return (ECON.capBase + ECON.capMul * landPow(p.tiles)) * (1 + ECON.cityBonus * cityWeight(cities[id])) * kind *
+      game.hmul(game.hooks.troopCapMul, id);
   };
 
   const diffMul = (id: PlayerId): number => {
@@ -77,7 +79,8 @@ export function installEconomy(game: Game): void {
     if (p.troops >= cap) return -(p.troops - cap) * ECON.decay;
     const x = Math.max(0, p.troops / cap);
     const g = ((x + 0.2) * (1 - x)) / 0.36;
-    return (ECON.growth * cap * g * diffMul(id)) / TICKS_PER_SEC;
+    // hook troopRateMul (growth only, not the decay above the cap): ×1 exactly in classic matches
+    return (ECON.growth * cap * g * diffMul(id) * game.hmul(game.hooks.troopRateMul, id)) / TICKS_PER_SEC;
   };
 
   const goldRate = (id: PlayerId): number => {
@@ -87,7 +90,8 @@ export function installEconomy(game: Game): void {
     const kind = p.kind === 'tribe' ? ECON.tribeGoldMul : 1;
     const perSec = (ECON.goldBase + ECON.goldMul * landPow(p.tiles)) * kind +
       ECON.factoryGold * factories[id] + ECON.portGold * ports[id];
-    return perSec / TICKS_PER_SEC;
+    // hooks goldRateMul (×1) and goldRateAdd (+0, per tick: upkeep, deposits, tribute) — neutral in classic matches
+    return (perSec * game.hmul(game.hooks.goldRateMul, id)) / TICKS_PER_SEC + game.hadd(game.hooks.goldRateAdd, id);
   };
 
   game.q.maxTroops = maxTroops;
@@ -105,6 +109,7 @@ export function installEconomy(game: Game): void {
         p.troops += troopRate(id);
         if (p.troops < 0) p.troops = 0;
         p.gold += goldRate(id);
+        if (game.advanced && p.gold < 0) p.gold = 0; // upkeep can make income negative; gold never goes below 0
       }
     },
   });

@@ -146,6 +146,16 @@ export function installAI(game: Game): void {
   const cx = (p: Player) => p.sumX / Math.max(1, p.tiles);
   const cy = (p: Player) => p.sumY / Math.max(1, p.tiles);
   const alive = (id: PlayerId) => id > 0 && game.players[id].alive;
+  // ── advanced-mode helpers (never used in classic matches: game.advanced is false there) ──
+  /** Advanced: a pact (or other hook) forbids `a` from attacking `b`. */
+  const forbidden = (a: PlayerId, b: PlayerId): boolean => game.advanced && !!b && game.hwhy(game.hooks.forbidAttack, a, b) !== null;
+  /** Advanced: reputation of a player (-100..100), 0 in classic matches. */
+  const repOf = (id: PlayerId): number => (game.advanced && game.adv ? game.adv.players[id]?.reputation ?? 0 : 0);
+  /** Attack a player: in advanced matches through the advanced AI (focused attack at a sensible point). */
+  const atk = (id: PlayerId, k: PlayerId, amt: number): boolean => {
+    const ax = game.advanced && k ? game.ext.advAI as undefined | { attack: (a: PlayerId, b: PlayerId, n: number) => boolean } : undefined;
+    return ax ? ax.attack(id, k, amt) : cmd.attack(id, k, amt);
+  };
   const idxClamp = (x: number, y: number) => {
     const xi = Math.round(x), yi = Math.round(y);
     if (xi < 0 || yi < 0 || xi >= W || yi >= H) return -1;
@@ -244,6 +254,7 @@ export function installAI(game: Game): void {
       const X = a.attacker;
       if (!alive(X) || game.areAllied(id, X)) continue;
       incomingTroops += a.troops;
+      if (game.advanced && forbidden(id, X)) continue;
       if (a.troops > bigThreat) { bigThreat = a.troops; st.threat = X; }
       if (a.troops < 20) continue;
       const counter = mine.find(m => m.target === X);
@@ -255,7 +266,7 @@ export function installAI(game: Game): void {
       const big = a.troops > p.troops * 0.35;
       if (!weaker && !big) continue;
       const amt = Math.min(p.troops * 0.5, weaker ? a.troops * 1.2 + 20 : a.troops * 0.8);
-      if (amt >= 20) cmd.attack(id, X, amt);
+      if (amt >= 20) atk(id, X, amt);
     }
     // pull troops home: overwhelmed while busy elsewhere
     if (incomingTroops > p.troops * 1.5 && t - st.lastRetreat > 50) {
@@ -297,6 +308,7 @@ export function installAI(game: Game): void {
       cand.length = 0;
       for (const [k, shared] of nb) {
         if (!k || !alive(k) || game.areAllied(id, k)) continue;
+        if (game.advanced && forbidden(id, k)) continue;
         const E = game.players[k];
         if (tribe && E.kind !== 'tribe') continue;
         const ratio = p.troops / Math.max(1, E.troops);
@@ -325,6 +337,7 @@ export function installAI(game: Game): void {
         if (k === game.humanId) sc += D.humanBias;
         if (E.kind === 'tribe') sc += 0.3;
         if (st.war === k) sc += 0.8;
+        if (game.advanced) sc -= repOf(k) / 100; // the untrustworthy make good targets
         // opposing attacks cancel troop for troop: hit someone else unless we clearly outgun them
         const theirs = incoming.find(x => x.attacker === k);
         if (theirs && ratio < 1.5) sc -= 1.2;
@@ -352,7 +365,7 @@ export function installAI(game: Game): void {
           if (ex.troops >= Math.min(p.troops * 0.3, F * 7.5 * (1 + dens))) { fronts++; if (!tribe) stats.busy++; continue; }
         }
         const amt = Math.min(p.troops * share * (fronts ? 0.7 : 1), p.troops - floor);
-        if (amt >= 30 && amt / (1 + dens * 1.2) >= 12 && cmd.attack(id, c.k, amt)) {
+        if (amt >= 30 && amt / (1 + dens * 1.2) >= 12 && atk(id, c.k, amt)) {
           if (!fronts || st.war === 0) st.war = c.k;
           fronts++;
           if (!tribe) stats.launched++;
@@ -412,6 +425,7 @@ export function installAI(game: Game): void {
         const o = k === 0 && coalition() ? leader : living[Math.floor(rng() * living.length)];
         const E = ps[o];
         if (!E.alive || o === id || game.areAllied(id, o) || E.tiles < 10) continue;
+        if (game.advanced && forbidden(id, o)) continue;
         if (o === game.humanId && humanAttackers >= D.humanCap) continue;
         const dens = E.troops / Math.max(1, E.tiles);
         if (force < dens * 1.5 * 7 * 2 + E.troops * 0.25) continue;
@@ -546,11 +560,12 @@ export function installAI(game: Game): void {
     if (rng() > 0.3 + 0.6 * pers.nuke) return;
     // target player: leader (coalition) > war target > strongest hostile neighbour
     let X: PlayerId = 0;
-    if (coalition() && leader !== id && !game.areAllied(id, leader)) X = leader;
+    if (coalition() && leader !== id && !game.areAllied(id, leader) && !(game.advanced && forbidden(id, leader))) X = leader;
     else {
       let bs = 0;
       for (const [k] of game.neighborsOf(id)) {
         if (!k || !alive(k) || game.areAllied(id, k)) continue;
+        if (game.advanced && forbidden(id, k)) continue;
         const E = game.players[k];
         const rel = q.relation(id, k);
         if (rel > -15 && k !== st.war) continue;
@@ -610,7 +625,7 @@ export function installAI(game: Game): void {
         if (!nb.has(k) || A.troops > p.troops * 0.2 || A.tiles > p.tiles * 0.5) continue;
         if (k === game.humanId && game.difficulty === 'easy') continue;
         if (rng() < 0.06) {
-          if (cmd.breakAlliance(id, k)) { st.war = k; cmd.attack(id, k, p.troops * 0.5); }
+          if (cmd.breakAlliance(id, k)) { st.war = k; atk(id, k, p.troops * 0.5); }
           return;
         }
       }
@@ -631,6 +646,7 @@ export function installAI(game: Game): void {
       if (coalition() && k === leader) s -= 50;
       if (E.traitorUntil > t) s -= 40;
       if (allied) s += 15;
+      if (game.advanced) s += repOf(k) / 3;
       if (k === game.humanId) {
         if (t - lastHumanProposal < HUMAN_PROPOSE_GLOBAL || t - st.lastHumanPropose < HUMAN_PROPOSE_BOT) return;
         s += D.humanFriend;
@@ -661,6 +677,7 @@ export function installAI(game: Game): void {
     if (me.kind === 'tribe') s += f.troops > me.troops * 3 ? 0.4 : -0.6;
     if (f.id === game.humanId) s += D.humanAccept;
     if (game.areAllied(id, f.id)) s += 0.6; // renewal
+    if (game.advanced) s += repOf(f.id) / 60; // reputation: −100 → −1.7, +100 → +1.7
     s += (rng() - 0.5) * 0.4;
     return s > 0.3;
   };

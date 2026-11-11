@@ -14,6 +14,8 @@ import { Hud } from './ui/hud';
 import { Input } from './ui/input';
 import { MobileUI } from './ui/mobile';
 import { Screens, loadSetup, type MatchConfig } from './ui/screens';
+import { AdvActions, AdvHud, aimOf, putAim, type AdvCtl, type AnyAim } from './ui/adv';
+import type { ScenarioId } from './sim/adv/types';
 import { h, toast } from './ui/dom';
 import { clock, fmt, pct, parseHex } from './ui/format';
 
@@ -33,9 +35,13 @@ export interface StartOptions {
   nations?: number;
   tribes?: number;
   speed?: number;
+  /** Advanced mode (docs/ADVANCED.md). */
+  advanced?: boolean;
+  scenario?: ScenarioId;
+  fog?: boolean;
 }
 
-class App implements Ctl {
+class App implements Ctl, AdvCtl {
   game!: Game;
   readonly renderer: Renderer;
   readonly screens: Screens;
@@ -45,6 +51,12 @@ class App implements Ctl {
   readonly input: Input;
   readonly minimap: Minimap;
   readonly mobile: MobileUI;
+  readonly aa: AdvActions;
+  readonly advHud: AdvHud;
+  /** Advanced: plain clicks use the classic whole-front attack. */
+  wholeFront = false;
+  /** Which title entry led to the setup (normal / advanced). */
+  private advMode = false;
   ratio = 0.25;
   speed = 1;
   private resumeSpeed = 1;
@@ -76,6 +88,9 @@ class App implements Ctl {
     this.hud = new Hud(this, this.act, hudHost);
     this.minimap = new Minimap(this.renderer, this.hud.root);
     this.ctxMenu = new ContextMenu(this, this.act, root);
+    this.aa = new AdvActions(this, this.act);
+    this.ctxMenu.adv = this.aa;
+    this.advHud = new AdvHud(this, this.aa, this.hud);
     this.screens = new Screens(root);
     this.input = new Input(this.renderer, {
       tap: (t, x, y) => this.onTap(t, x, y),
@@ -135,6 +150,26 @@ class App implements Ctl {
     this.renderer.fx.ping(x, y, performance.now());
   }
 
+  setWholeFront(v: boolean): void {
+    if (!this.game?.adv) return;
+    this.wholeFront = v;
+    this.advHud.syncFront();
+    if (aimOf(this.renderer)?.kind === 'focus') this.setAim(null);
+    toast(v ? 'Clic: attacco su tutto il fronte' : 'Clic: attacco mirato sul punto', 'info');
+  }
+
+  openDoctrines(): void {
+    if (this.phase !== 'match' || !this.game?.adv || !this.me()) return;
+    this.ctxMenu.close();
+    this.advHud.openDoctrines();
+  }
+
+  showPanel(el: HTMLElement): () => void {
+    const close = () => { if (el.isConnected) { this.screens.closeModal(); this.resumeFromModal(); } };
+    this.screens.panel(el, close);
+    return close;
+  }
+
   openHelp(): void {
     this.pauseForModal();
     this.screens.help(() => { this.screens.closeModal(); this.resumeFromModal(); });
@@ -168,7 +203,7 @@ class App implements Ctl {
     this.screens.closeModal();
     this.hud.setVisible(false);
     this.phase = 'setup';
-    document.body.classList.remove('paused', 'in-match');
+    document.body.classList.remove('paused', 'in-match', 'adv-match');
     this.showSetup(false);
   }
 
@@ -186,13 +221,18 @@ class App implements Ctl {
       const cam = this.renderer.cam;
       cam.centerOn(map.width * 0.35, map.height * 0.5, cam.fitScale() * 1.8, false);
     } catch (err) { console.warn('title map failed', err); }
-    this.screens.title(() => this.showSetup(false), () => this.showSetup(true), () => this.openHelp());
+    document.body.classList.remove('adv-match');
+    this.screens.title(
+      () => { this.advMode = false; this.showSetup(false); },
+      () => { this.advMode = true; this.showSetup(false); },
+      () => { this.advMode = false; this.showSetup(true); },
+      () => this.openHelp());
   }
 
   private showSetup(spectate: boolean): void {
     this.phase = 'setup';
     document.body.classList.add('at-title');
-    this.screens.setup(cfg => this.afterSetup(cfg), () => this.showTitle(), spectate);
+    this.screens.setup(cfg => this.afterSetup(cfg), () => this.showTitle(), spectate, this.advMode);
   }
 
   private async loadMap(kind: 'world' | 'proc', seed: number): Promise<MapData> {
@@ -293,6 +333,7 @@ class App implements Ctl {
       nations: cfg.nations,
       tribes: cfg.tribes,
       difficulty: cfg.difficulty,
+      ...(cfg.advanced ? { advanced: true, scenario: cfg.scenario ?? 'libero', fog: cfg.fog !== false } : {}),
     });
     game.trackChanges = true;
     game.changed.length = 0;
@@ -305,6 +346,7 @@ class App implements Ctl {
     this.acc = 0;
     this.endShown = false;
     this.stats = { peakShare: 0, peakTroops: 0, kills: 0, built: 0, nukes: 0, boats: 0, startTick: 0 };
+    this.wholeFront = false;
     this.setAim(null);
     if (spawn && !game.humanId) toast('Punto di partenza non valido: modalità spettatore', 'danger');
     const me = game.human;
@@ -312,12 +354,14 @@ class App implements Ctl {
     if (me) cam.centerOn(me.spawnX, me.spawnY, Math.max(cam.fitScale() * 2, Math.min(cam.viewW, cam.viewH) / 150), false);
     else cam.fit();
     this.hud.attach(game);
+    this.advHud.attach(game);
     this.hud.setVisible(true);
     game.on(ev => { if (this.game === game) this.onGameEvent(ev); });
     document.body.classList.add('in-match');
     this.speed = 1;
     this.setSpeed(speed);
     this.hud.addLog(me ? `${me.name}, la tua nazione è nata. Espanditi!` : 'Modalità spettatore: clicca un territorio per seguirlo.', 'good', me?.spawnX, me?.spawnY);
+    if (game.adv && me) this.hud.addLog('Partita avanzata: il clic attacca un punto preciso, G per tutto il fronte. R: dottrine.', 'info');
     return game;
   }
 
@@ -333,7 +377,11 @@ class App implements Ctl {
       nations: o.nations ?? 88,
       tribes: o.tribes ?? 150,
       spectate: !!o.spectate,
+      advanced: !!o.advanced,
+      scenario: o.advanced ? (o.map === 'world' ? o.scenario ?? 'libero' : 'libero') : undefined,
+      fog: o.advanced ? o.fog !== false : undefined,
     };
+    this.advMode = cfg.advanced!;
     this.phase = 'loading';
     this.screens.loading('Preparo la partita…');
     const map = await this.loadMap(cfg.map, cfg.seed);
@@ -428,11 +476,17 @@ class App implements Ctl {
   }
 
   // ── input handlers ─────────────────────────────────────────────────────────
-  private setAim(a: Renderer['aim']): void {
-    this.renderer.aim = a;
+  setAim(a: AnyAim | Renderer['aim']): void {
+    putAim(this.renderer, a as AnyAim);
     this.renderer.aimReason = null;
     this.lastAimCheck = 0;
-    document.body.classList.toggle('aiming', !!a);
+    document.body.classList.toggle('aiming', !!a && a.kind !== 'focus');
+  }
+
+  /** The armed aim, ignoring the passive focus-attack preview. */
+  private armedAim(): AnyAim {
+    const a = aimOf(this.renderer);
+    return a && a.kind !== 'focus' ? a : null;
   }
 
   private onTap(tile: number, _x: number, _y: number): void {
@@ -440,26 +494,31 @@ class App implements Ctl {
     if (this.phase !== 'match') return;
     if (performance.now() - this.ctxMenu.closedAt < 250) return;
     if (this.mobile.tap(tile)) return;
-    const aim = this.renderer.aim;
+    const aim = this.armedAim();
     if (aim) {
       if (tile < 0) return;
-      const ok = aim.kind === 'nuke' ? this.act.nuke(aim.nuke, tile) : (this.act.boat(tile), true);
+      let ok: boolean;
+      if (aim.kind === 'nuke') ok = this.act.nuke(aim.nuke, tile);
+      else if (aim.kind === 'fleet') ok = this.aa.sendFleet(tile);
+      else if (aim.kind === 'capital') ok = this.aa.moveCapital(this.aa.cityNear(tile));
+      else { this.act.boat(tile); ok = true; }
       if (ok) this.setAim(null);
       return;
     }
-    this.act.primary(tile);
+    if (this.game.adv) this.aa.primary(tile);
+    else this.act.primary(tile);
   }
 
   private onContext(tile: number, x: number, y: number): void {
     if (this.phase !== 'match') return;
-    if (this.renderer.aim) { this.setAim(null); return; }
+    if (this.armedAim()) { this.setAim(null); return; }
     this.ctxMenu.show(tile, x, y);
   }
 
   private onHover(tile: number): void {
     this.renderer.hoverTile = tile;
     if (this.phase === 'match') {
-      this.hud.mapHover = tile >= 0 ? this.game.owner[tile] : 0;
+      this.hud.mapHover = tile >= 0 ? this.renderer.shownOwner(tile) : 0; // fog: what the map shows
       this.lastAimCheck = 0;
     }
   }
@@ -485,7 +544,7 @@ class App implements Ctl {
     switch (e.code) {
       case 'Escape':
         if (this.ctxMenu.open) this.ctxMenu.close();
-        else if (this.renderer.aim) this.setAim(null);
+        else if (this.armedAim()) this.setAim(null);
         else this.openPause();
         return true;
       case 'Space':
@@ -507,6 +566,15 @@ class App implements Ctl {
         this.setAim({ kind: 'boat' });
         toast('Nave pronta: clicca la costa da invadere (Esc annulla)', 'info');
         return true;
+    }
+    if (this.game.adv) {
+      switch (e.code) {
+        case 'KeyZ': if (me) this.aa.cycleStance(); return true;
+        case 'KeyR': this.openDoctrines(); return true;
+        case 'KeyG': if (me) this.setWholeFront(!this.wholeFront); return true;
+        case 'KeyX': if (me) this.aa.armFleet(); return true;
+        case 'KeyK': if (me) this.aa.jumpCapital(); return true;
+      }
     }
     const bt = BUILD_KEYS[e.code];
     if (bt) {
@@ -555,15 +623,16 @@ class App implements Ctl {
       this.titleDrift += dt;
       if (g) { cam.x += dt * 0.004; if (cam.x > g.W * 0.7) cam.x = g.W * 0.3; cam.clamp(); }
     }
-    if (this.phase === 'match' && this.renderer.aim && now - this.lastAimCheck > 150) {
+    if (this.phase === 'match' && (this.renderer.aim || this.game?.adv) && now - this.lastAimCheck > 150) {
       this.lastAimCheck = now;
+      this.updatePassiveAim();
       this.updateAimReason();
     }
     const alpha = this.phase === 'match' ? Math.min(1, this.acc / TICK_MS) : 1;
     try {
       this.renderer.render(alpha, now);
       if (this.phase === 'match' || this.phase === 'spawn') this.minimap.draw(now);
-      if (this.phase === 'match') this.hud.update(now);
+      if (this.phase === 'match') { this.hud.update(now); this.advHud.update(now); }
     } catch (err) {
       if (now - this.lastErr > 5000) { this.lastErr = now; console.error(err); }
     }
@@ -574,14 +643,32 @@ class App implements Ctl {
     return { fps: Math.round(1000 / this.renderer.frameMs), cpuMs: +this.cpuMs.toFixed(2), simMsPerTick: +this.simMs.toFixed(2), droppedCatchUps: this.stepBudgetHit };
   }
 
+  /** Advanced, desktop mouse: show the focus-attack preview while hovering land a click would attack by land. */
+  private updatePassiveAim(): void {
+    const g = this.game, r = this.renderer, cur = aimOf(r);
+    if (cur && cur.kind !== 'focus') return;
+    const me = this.me(), t = r.hoverTile;
+    let want = false;
+    if (g.adv && me && !this.wholeFront && t >= 0 && !this.ctxMenu.open && !this.screens.modalOpen && !this.mobile.placing
+      && this.input.lastPointerType === 'mouse' && !document.body.classList.contains('touch-ui') && g.isLand(t)) {
+      const o = g.owner[t];
+      want = o !== me.id && !(o && g.areAllied(me.id, o)) && this.act.landReachable(t);
+    }
+    if (want && !cur) { putAim(r, { kind: 'focus' }); }
+    else if (!want && cur) { putAim(r, null); r.aimReason = null; }
+  }
+
   private updateAimReason(): void {
-    const g = this.game, aim = this.renderer.aim, me = this.me();
+    const g = this.game, aim = aimOf(this.renderer), me = this.me();
     const t = this.renderer.hoverTile;
     if (!aim || !me || t < 0) { this.renderer.aimReason = null; return; }
     if (aim.kind === 'nuke') {
       const o = g.owner[t];
       this.renderer.aimReason = o && g.areAllied(me.id, o) ? 'Bersaglio alleato' : g.q.canNuke(me.id, aim.nuke, t);
-    } else this.renderer.aimReason = g.q.canBoat(me.id, t);
+    } else if (aim.kind === 'focus') this.renderer.aimReason = g.adv ? g.adv.q.canAttackAt(me.id, t) : null;
+    else if (aim.kind === 'fleet') this.renderer.aimReason = g.adv ? (g.isLand(t) ? 'Scegli un punto di mare' : g.adv.q.canSendFleet(me.id, t)) : null;
+    else if (aim.kind === 'capital') this.renderer.aimReason = g.adv ? g.adv.q.canMoveCapital(me.id, this.aa.cityNear(t)) : null;
+    else this.renderer.aimReason = g.q.canBoat(me.id, t);
   }
 }
 
@@ -614,6 +701,9 @@ if (params.get('auto') === '1') {
     nations: num('nations'),
     tribes: num('tribes'),
     speed: num('speed'),
+    advanced: params.get('adv') === '1',
+    scenario: ((s: string | null) => (s === '1939' || s === 'guerrafredda' || s === 'libero' ? s : undefined))(params.get('scenario')),
+    fog: params.get('fog') !== '0',
   }).catch(err => { console.error(err); app.showTitle(); });
 } else {
   app.showTitle();

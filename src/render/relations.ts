@@ -5,6 +5,8 @@
 // last such contact. Tribes only turn ENEMY when they attack the human (the human eats tribes all game
 // long, that is not a war). Allies are never enemies; forming an alliance clears the war memory.
 // No human, or a dead human (spectating), means no relations: nations use their per-nation colours.
+// Advanced mode: a pact partner of the human (nap / truce / tribute, adv.q.pact) is never coloured as an enemy,
+// and forming a pact clears the war memory like an alliance does.
 import type { Game } from '../sim/game';
 import { R_ALLY, R_ENEMY, R_ME, R_NEUTRAL, R_NONE, R_TRIBE } from './skins';
 
@@ -42,6 +44,12 @@ export class Relations {
         case 'playerDied':
           this.dirty = true;
           break;
+        case 'pactFormed':
+          if (ev.pact.a === me || ev.pact.b === me) { this.ensure(); this.warUntil[ev.pact.a === me ? ev.pact.b : ev.pact.a] = 0; this.dirty = true; }
+          break;
+        case 'pactEnded':
+          if (ev.pact.a === me || ev.pact.b === me) this.dirty = true;
+          break;
       }
     });
   }
@@ -72,6 +80,7 @@ export class Relations {
       }
     }
     let changed: number[] | null = null;
+    const adv = g.advanced ? g.adv : null;
     for (let id = 1; id < ps.length; id++) {
       const p = ps[id];
       let r: number;
@@ -79,7 +88,7 @@ export class Relations {
       else if (!me) r = p.kind === 'tribe' ? R_TRIBE : R_NEUTRAL;
       else if (id === me) r = R_ME;
       else if (human!.allies.has(id)) r = R_ALLY;
-      else if (this.warUntil[id] > g.tick) r = R_ENEMY;
+      else if (this.warUntil[id] > g.tick && !(adv && adv.q.pact(me, id))) r = R_ENEMY;
       else r = p.kind === 'tribe' ? R_TRIBE : R_NEUTRAL;
       if (this.rel[id] !== r) {
         // tiles of a dead player are already gone: no repaint needed
