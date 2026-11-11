@@ -5,6 +5,10 @@
 /* ── desktop-safe defaults for elements that only the touch layer uses ──── */
 .tb-touch, .rt-step, .m-dock, .m-banner, .m-fs-float, .m-rotate { display: none; }
 .lg.old { display: none; }
+.lg.fading { opacity: 0; transition: opacity 3s linear; }
+/* top-bar groups and the alert column only form boxes on phones (src/ui/hud.ts) */
+.tb-l, .tb-r, .m-lcol { display: contents; }
+.tb-ic, .m-ph, .speed .sp.sp-cyc { display: none; }
 
 .m-svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; display: block; flex: none; }
 .m-glyph {
@@ -139,88 +143,6 @@ body.m-rotate-on .ctxmenu, body.m-rotate-on .toasts { display: none; }
 /* help: touch section */
 .m-help h3 { margin-top: 4px; }
 
-/* ── phone landscape layout (short touch screens) ────────────────────────── */
-@media (max-height: 520px), (max-width: 700px) {
-  body.touch-ui { --top-h: calc(var(--sa-t) + 54px); }
-
-  /* top bar: full width between the safe insets */
-  body.touch-ui .topbar {
-    top: var(--sa-t); left: var(--sa-l); right: var(--sa-r); transform: none; max-width: none;
-    flex-wrap: nowrap; justify-content: flex-start; gap: 8px; padding: 3px 4px 3px 10px;
-  }
-  body.touch-ui .brand, body.touch-ui .stat.time, body.touch-ui .stat .rate, body.touch-ui .who { display: none; }
-  body.touch-ui .stats { flex: 1; min-width: 0; gap: 10px; }
-  body.touch-ui .stat.troops { width: auto; flex: 1.3 1 0; min-width: 84px; max-width: 150px; }
-  body.touch-ui .stat.gold { width: auto; flex: 0.9 1 0; min-width: 58px; max-width: 110px; }
-  body.touch-ui .stat.land { width: auto; flex: 1 1 0; min-width: 70px; max-width: 140px; }
-  body.touch-ui .stat .lbl { font-size: 8.5px; }
-  body.touch-ui .stat .val b { font-size: 14px; }
-  body.touch-ui .stat .val .dim { font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
-  body.touch-ui .speed { flex: none; }
-  body.touch-ui .menu-btns .ib:first-child { display: none; } /* help lives in the ☰ menu */
-  body.touch-ui.paused .hud::after { top: var(--top-h); padding: 5px 10px 5px 13px; font-size: 11px; }
-
-  /* right column: leaderboard (collapsed by default) + selected player's card */
-  body.touch-ui .side {
-    top: var(--top-h); bottom: auto; right: var(--sa-r); width: 220px; gap: 6px;
-    max-height: calc(100dvh - var(--top-h) - var(--sa-b) - 96px);
-  }
-  body.touch-ui .leaderboard .ph { padding: 0 12px; }
-  body.touch-ui .lb-cols, body.touch-ui .lb-row { grid-template-columns: 16px 10px 1fr 40px 44px; gap: 5px; }
-  body.touch-ui .pcard { display: block; padding: 8px 10px; font-size: 12px; cursor: pointer; overflow-y: auto; min-height: 0; flex: 0 1 auto; }
-  body.touch-ui .pcard.hidden { display: none !important; }
-  body.touch-ui .pc-head { margin-bottom: 4px; }
-  body.touch-ui .kv { padding: 2px 0; }
-
-  /* left column: attacks under the top bar */
-  body.touch-ui .attacks {
-    top: var(--top-h); left: var(--sa-l); width: 236px; overflow-y: auto;
-    max-height: calc(100dvh - var(--top-h) - var(--sa-b) - 124px);
-  }
-  body.touch-ui .requests { top: var(--top-h); max-width: calc(100vw - var(--sa-l) - var(--sa-r) - 480px); min-width: 280px; }
-  body.touch-ui.paused .requests { top: calc(var(--top-h) + 30px); }
-  body.touch-ui .req { padding: 5px 5px 5px 10px; gap: 6px; }
-
-  /* event log: last two lines above the dock; "Eventi" expands the history */
-  body.touch-ui .log {
-    display: flex; left: var(--sa-l); bottom: calc(var(--sa-b) + 64px); width: min(300px, 42vw); gap: 2px;
-  }
-  body.touch-ui .log:not(.expanded) .lg:nth-last-child(n+3) { display: none; }
-  body.touch-ui .lg { font-size: 11px; padding: 4px 8px; }
-  body.touch-ui .log.expanded {
-    pointer-events: auto !important; overflow-y: auto; padding: 4px;
-    max-height: calc(100dvh - var(--top-h) - var(--sa-b) - 72px);
-    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); z-index: 4;
-  }
-  body.touch-ui .log.expanded .lg { display: flex !important; opacity: 1 !important; animation: none; }
-
-  /* bottom centre: ratio slider between dock and minimap */
-  body.touch-ui .ratio {
-    left: calc(var(--sa-l) + 228px); right: calc(var(--sa-r) + 158px); width: auto; max-width: 380px; transform: none;
-    bottom: var(--sa-b); padding: 4px 6px 2px 10px;
-  }
-  body.touch-ui .ratio-head { margin-bottom: 0; gap: 6px; }
-  body.touch-ui .ratio-val b { font-size: 13px; }
-  body.touch-ui .ratio-val span { font-size: 11px; }
-  body.touch-ui .m-banner:not(.hidden) {
-    left: calc(var(--sa-l) + 228px); right: calc(var(--sa-r) + 158px); width: auto; max-width: none; transform: none;
-  }
-
-  /* minimap: smaller, bottom-right inside the safe area */
-  body.touch-ui .minimap { width: 150px !important; height: auto !important; right: var(--sa-r); bottom: var(--sa-b); }
-
-  body.touch-ui .toasts { bottom: calc(var(--sa-b) + 70px); max-width: calc(100vw - 40px); }
-  body.touch-ui .toast { font-size: 12px; padding: 6px 12px; text-align: center; }
-}
-/* very narrow landscape (iPhone SE 667): squeeze the dock labels and the banner buttons */
-@media (max-width: 720px) {
-  body.touch-ui .m-db { width: 48px; }
-  body.touch-ui .ratio, body.touch-ui .m-banner:not(.hidden) { left: calc(var(--sa-l) + 212px); right: calc(var(--sa-r) + 156px); }
-  body.touch-ui .m-banner .btn { padding: 0 9px; }
-  body.touch-ui .ratio-head .lbl { display: none; }
-  body.touch-ui .ratio-val { text-align: left; }
-}
-
 /* ── full-screen flows on short screens (title, setup, spawn, modals) ────── */
 @media (max-height: 520px) {
   .scr.title, .scr.setup { display: flex; place-items: initial; align-items: flex-start; justify-content: center; }
@@ -296,28 +218,261 @@ body.touch-ui .adv-o { min-height: 40px; }
 body.touch-ui .cm-row.sub .cm-build.cm-sub { width: auto; }
 body.touch-ui .adv-docs .ib { flex: none; }
 
-@media (max-height: 520px), (max-width: 700px) {
-  body.touch-ui .adv-col {
-    top: var(--top-h); left: var(--sa-l); width: 252px;
-    max-height: calc(100dvh - var(--top-h) - var(--sa-b) - 124px);
-  }
-  body.touch-ui .adv-col.open { max-height: calc(100dvh - var(--top-h) - var(--sa-b) - 64px); }
-  body.touch-ui.paused .adv-col { top: calc(var(--top-h) + 30px); }
-  body.touch-ui .adv-tag.top { display: none; }
-  body.touch-ui.adv-match .ratio, body.touch-ui.adv-match .m-banner:not(.hidden) { left: calc(var(--sa-l) + 282px); }
-  body.touch-ui.adv-match .requests { max-width: calc(100vw - var(--sa-l) - var(--sa-r) - 520px); }
-  body.touch-ui .adv-docs { padding: 12px; }
-  body.touch-ui .adv-brs { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-  body.touch-ui .adv-br { padding: 7px; }
-  body.touch-ui .adv-lv { font-size: 11px; padding: 5px 6px; }
-  body.touch-ui .adv-lv-h small { font-size: 9.5px; }
-  body.touch-ui .help-adv-grid { grid-template-columns: 1fr 1fr; }
+
+/* ══ PHONE LANDSCAPE LAYOUT ══════════════════════════════════════════════════════════════════
+   body.m-phone = touch UI on a short (≤ 520 px) or narrow (≤ 700 px) screen, set by src/ui/mobile.ts.
+   Map first: a one-line strip on top, an icon rail on the left edge, a slim strength bar at the bottom;
+   everything else opens on demand as a fly-out (one at a time, a tap on the map closes it).
+   Hit areas ≥ 34 px with ≥ 6 px between neighbours; HUD text 11–12 px. */
+body.m-phone {
+  --strip-h: 30px;
+  --top-h: calc(var(--sa-t) + var(--strip-h) + 8px);       /* first free line under the strip */
+  --fly-x: calc(var(--sa-l) + 52px);                         /* fly-outs open right of the rail */
+  --bar-h: 32px;                                              /* strength bar */
+  --fly-max-h: calc(100dvh - var(--top-h) - var(--sa-b));
 }
-@media (max-width: 720px) {
-  body.touch-ui.adv-match .ratio, body.touch-ui.adv-match .m-banner:not(.hidden) { left: calc(var(--sa-l) + 262px); }
+body.m-phone .hud { font-size: 12px; }
+
+/* ── top strip: two pills (stats left, controls right), map visible between them ── */
+body.m-phone .topbar {
+  top: var(--sa-t); left: var(--sa-l); right: var(--sa-r); height: var(--strip-h); transform: none; max-width: none;
+  padding: 0; gap: 8px; justify-content: space-between; flex-wrap: nowrap;
+  background: none; border: 0; box-shadow: none; pointer-events: none;
 }
-@media (max-height: 520px), (max-width: 700px) {
-  body.touch-ui.adv-match .ratio-head .lbl { display: none; }
-  body.touch-ui.adv-match .ratio-val { text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-  body.touch-ui.adv-match .ratio-head { align-items: center; }
+body.m-phone .brand, body.m-phone .who, body.m-phone .adv-tag.top, body.m-phone .stat .lbl { display: none; }
+body.m-phone .tb-l, body.m-phone .tb-r { display: flex; align-items: center; height: var(--strip-h); pointer-events: auto; min-width: 0; }
+body.m-phone .tb-l { gap: 10px; padding: 0 3px 0 9px; flex: 0 1 auto; }
+body.m-phone .tb-r { gap: 6px; padding: 0 2px; flex: none; }
+body.m-phone .stats { display: contents; }
+body.m-phone .stat { width: auto; height: var(--strip-h); justify-content: center; gap: 2px; flex: none; }
+body.m-phone .stat.troops { min-width: 76px; }
+body.m-phone .stat.gold { min-width: 70px; }
+body.m-phone .stat.land { min-width: 50px; }
+body.m-phone .stat.time { display: flex; min-width: 46px; }
+body.m-phone .stat .val { gap: 3px; align-items: center; line-height: 1; }
+body.m-phone .stat .val b, body.m-phone .stat.time .val b { font: 700 12px/1 var(--mono); letter-spacing: 0; }
+body.m-phone .stat.time .val b { color: var(--dim); }
+body.m-phone .stat .val .dim { font-size: 11px; }
+body.m-phone .stat .rate { font-size: 10.5px; margin-left: 2px; }
+body.m-phone .stat.gold .rate { display: inline; }
+body.m-phone .stat.troops .rate, body.m-phone .stat.land .dim { display: none; }
+body.m-phone .tb-ic { display: block; width: 12px; height: 12px; flex: none; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; color: var(--faint); }
+body.m-phone .tb-ic.gold { color: var(--gold); }
+body.m-phone .stat .bar { height: 2px; margin-left: 15px; }
+body.m-phone .stat .bar.win em { top: -2px; bottom: -2px; width: 2px; }
+
+/* strip buttons: 34 px tall hit areas that overhang the 30 px pill by 2 px */
+body.m-phone .tb-r .ib, body.m-phone .tb-l .ib {
+  width: 36px; height: 34px; margin: -2px 0; border: 0; background: transparent; color: var(--dim);
+  font: 700 12px/1 var(--mono); border-radius: var(--btn-radius);
 }
+body.m-phone .tb-r .ib.on, body.m-phone .tb-l .ib.on { color: var(--accent); background: var(--fill-2); }
+body.m-phone .tb-r .ib .m-svg { width: 17px; height: 17px; }
+body.m-phone .tb-touch { gap: 6px; order: 1; }
+body.m-phone .speed { order: 2; background: none; border: 0; padding: 0; box-shadow: none; }
+body.m-phone .menu-btns { order: 3; gap: 6px; }
+body.m-phone .menu-btns .ib:first-child { display: none; } /* help lives in the ☰ menu */
+body.m-phone .m-ph { display: grid; }
+body.m-phone .m-lbb { display: flex; align-items: center; justify-content: center; gap: 1px; width: auto; min-width: 38px; padding: 0 6px; }
+body.m-phone .m-lbb .m-hash { color: var(--faint); font-size: 10px; }
+body.m-phone .m-lbb b { color: var(--text); }
+body.m-phone .speed .sp { display: none; }
+body.m-phone .speed .sp.sp-cyc {
+  display: grid; width: 40px; min-width: 0; height: 34px; margin: -2px 0; padding: 0; color: var(--text);
+  background: var(--fill-1); border: 1px solid var(--line); border-radius: var(--btn-radius);
+}
+body.m-phone .speed .sp.sp-cyc.paused { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+body.m-phone.paused .hud::after { display: none; } /* the speed button shows the pause */
+/* attacks badge (left pill, only while attacks run) */
+body.m-phone .tb-l .m-atkb { display: flex; align-items: center; justify-content: center; gap: 4px; width: auto; min-width: 40px; padding: 0 7px; color: var(--text); }
+body.m-phone .tb-l .m-atkb.hidden { display: none; }
+body.m-phone .m-atkb .m-svg { width: 14px; height: 14px; }
+body.m-phone .m-atkb .m-ai { color: var(--danger-text); }
+body.m-phone .m-atkb .m-ai:not(:empty)::before { content: '+'; }
+body.m-phone .m-atkb b:empty { display: none; }
+body.m-phone .tb-l .m-atkb.inc { background: var(--danger-bg); color: var(--danger-text); }
+
+/* ── left icon rail (thumb zone: anchored bottom-left) ── */
+body.m-phone .m-dock { left: var(--sa-l); bottom: var(--sa-b); }
+body.m-phone .m-dock-row { display: flex; flex-direction: column; gap: 6px; padding: 3px; }
+body.m-phone .m-db { width: 40px; height: 40px; padding: 2px; gap: 0; background-clip: content-box; }
+body.m-phone .m-db > span { display: none; }
+body.m-phone .m-db .m-svg { width: 20px; height: 20px; }
+body.m-phone .m-db.on { background: var(--accent) content-box; }
+body.m-phone .m-db.cmd.attn::after { top: 2px; right: 2px; }
+/* trays fly out beside the rail, level with their button (top set from JS) */
+body.m-phone .m-tray {
+  left: calc(100% + 6px); bottom: auto; top: 0; display: grid; grid-template-columns: repeat(2, 66px); gap: 6px; padding: 6px;
+  animation: fadeUp 0.12s ease-out;
+}
+body.m-phone .m-tray.arms { grid-template-columns: repeat(2, 72px); }
+body.m-phone .m-tb { width: auto; min-height: 50px; padding: 4px 2px; gap: 2px; font-size: 10.5px; }
+body.m-phone .m-tb.nuke { width: auto; }
+body.m-phone .m-tb .m-glyph { width: 20px; height: 20px; }
+body.m-phone .m-tb .m-nk { font-size: 17px; line-height: 20px; }
+body.m-phone .m-cost { font-size: 10px; }
+
+/* ── bottom: slim strength bar (and the armed banner in the same slot) ── */
+body.m-phone .ratio {
+  display: flex; align-items: center; gap: 6px; left: 0; right: 0; margin: 0 auto; transform: none; bottom: var(--sa-b);
+  width: min(390px, calc(100vw - 2 * var(--fly-x))); height: var(--bar-h); padding: 0 9px 0 0;
+}
+body.m-phone .ratio-head { display: contents; }
+body.m-phone .ratio-head .lbl, body.m-phone .ratio .keys { display: none; }
+body.m-phone .ratio-row { order: 1; flex: 1; min-width: 0; gap: 6px; height: var(--bar-h); }
+body.m-phone .ratio-val { order: 2; flex: none; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 116px; line-height: 1; }
+body.m-phone .ratio-val b { font: 700 12px/1 var(--mono); }
+body.m-phone .ratio-val span { font-size: 10.5px; }
+body.m-phone .rt-step { width: 34px; height: 34px; margin: -1px 0; font-size: 18px; border-radius: var(--btn-radius); }
+body.m-phone .ratio-row > .rt-step:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+body.m-phone .ratio input[type=range] { height: 34px; margin: -1px 0; min-width: 50px; background-size: 100% 4px; }
+body.m-phone .ratio input[type=range]::-webkit-slider-thumb { width: 22px; height: 22px; }
+body.m-phone .ratio .rt-front { order: 0; flex: none; min-height: 34px; margin: -1px 0; padding: 0 8px; font-size: 10px; }
+body.m-phone .ratio .rt-front.hidden { display: none; }
+body.m-phone .m-banner:not(.hidden) {
+  left: 0; right: 0; margin: 0 auto; transform: none; bottom: var(--sa-b);
+  width: min(440px, calc(100vw - 2 * var(--fly-x))); max-width: none; min-height: 40px; padding: 2px 3px 2px 8px; gap: 6px;
+}
+body.m-phone .m-banner .btn { min-height: 34px; padding: 0 10px; font-size: 12px; }
+body.m-phone .m-bn-ic { width: 22px; }
+body.m-phone .m-bn-ic .m-svg, body.m-phone .m-bn-ic .m-glyph { width: 18px; height: 18px; }
+body.m-phone .m-bn-t b { font-size: 12px; }
+body.m-phone .m-bn-t small { font-size: 10.5px; }
+
+/* ── alerts + attacks: column under the strip, right of the rail ── */
+body.m-phone .m-lcol {
+  display: flex; flex-direction: column; gap: 6px; position: absolute; z-index: 3; top: var(--top-h); left: var(--fly-x);
+  width: min(300px, calc(100vw - var(--fly-x) - var(--sa-r) - 8px)); max-height: calc(var(--fly-max-h) - var(--bar-h) - 8px);
+  overflow-y: auto; overscroll-behavior: contain; pointer-events: none;
+}
+body.m-phone .m-lcol > .attacks { pointer-events: auto; }
+body.m-phone .requests { position: static; transform: none; gap: 6px; }
+body.m-phone .requests:not(:has(> .req:not(.hidden))) { display: none; }
+body.m-phone .requests > .req:nth-child(n+3 of .req:not(.hidden):not(.out)) { display: none; } /* two alerts at a time */
+body.m-phone .req { padding: 3px 3px 3px 9px; gap: 6px; }
+body.m-phone .req-t { flex: 1; min-width: 0; cursor: default; }
+body.m-phone .req-t b, body.m-phone .req-t small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.m-phone .req-t b { font-size: 12px; }
+body.m-phone .req-t small { font-size: 11px; }
+body.m-phone .req .btn { min-height: 34px; padding: 0 9px; font-size: 12px; border-radius: var(--btn-radius); flex: none; }
+body.m-phone .req .btn.m-x { width: 34px; padding: 0; }
+body.m-phone .req.m-inc { border-color: var(--danger); background: var(--danger-bg); }
+body.m-phone .req.m-inc .req-t { cursor: pointer; min-height: 34px; display: flex; flex-direction: column; justify-content: center; }
+body.m-phone .attacks { position: static; width: auto; display: none; padding-bottom: 4px; }
+body.m-phone.m-open-atk .attacks:not(.hidden) { display: block; }
+body.m-phone .attacks .ph { padding: 7px 10px 3px; }
+body.m-phone .atk { padding: 3px 4px 0 10px; gap: 6px; font-size: 12px; }
+body.m-phone .atk .an { align-self: stretch; display: flex; align-items: center; min-height: 34px; }
+body.m-phone .atk .btn.xs { min-height: 34px; min-width: 34px; padding: 0 9px; font-size: 11.5px; border-radius: var(--btn-radius); }
+
+/* ── right column: leaderboard (on demand) + selected player's card ── */
+body.m-phone .side {
+  top: var(--top-h); bottom: auto; right: var(--sa-r); width: 232px; gap: 6px; z-index: 3;
+  max-height: calc(var(--fly-max-h) - var(--bar-h) - 8px);
+}
+body.m-phone .leaderboard { display: none; }
+body.m-phone.m-open-lb .leaderboard { display: flex; }
+body.m-phone .leaderboard.collapsed .lb-cols { display: grid; }
+body.m-phone .leaderboard.collapsed .lb-body { display: block; }
+body.m-phone .leaderboard:not(.expanded) .lb-row:nth-child(n+6):not([style*="none"]) { display: grid !important; }
+body.m-phone .leaderboard .ph { min-height: 34px; padding: 0 10px; }
+body.m-phone .leaderboard .chev { transform: rotate(-135deg); margin-top: 3px; }
+body.m-phone .lb-cols, body.m-phone .lb-row { grid-template-columns: 16px 10px 1fr 42px 40px; gap: 5px; }
+body.m-phone .lb-row { height: 34px; font-size: 12px; margin-top: 6px; }
+body.m-phone .lb-row:first-child { margin-top: 0; }
+body.m-phone .lb-row.gap { margin-top: 12px; }
+body.m-phone .pcard { display: block; padding: 7px 9px; font-size: 11.5px; cursor: pointer; overflow-y: auto; min-height: 0; flex: 0 1 auto; }
+body.m-phone .pcard.hidden { display: none !important; }
+body.m-phone .pc-head { margin-bottom: 4px; gap: 8px; }
+body.m-phone .pc-head b { font-size: 12.5px; }
+body.m-phone .sw.big { width: 20px; height: 20px; }
+body.m-phone .kv { padding: 2px 0; }
+
+/* ── event log: only the newest line (fades in seconds) above the bar; "Eventi" opens the history ── */
+body.m-phone .log {
+  display: flex; left: 0; right: 0; margin: 0 auto; transform: none; bottom: calc(var(--sa-b) + var(--bar-h) + 6px);
+  width: min(430px, calc(100vw - 2 * var(--fly-x))); align-items: center; gap: 2px;
+}
+body.m-phone .log:not(.expanded) .lg:not(:last-child) { display: none; }
+body.m-phone .log:not(.expanded) .lg { pointer-events: none; max-width: 100%; min-height: 0; font-size: 11px; padding: 3px 9px; }
+body.m-phone .log:not(.expanded) .lg span:last-child { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.m-phone .lg.fading { transition-duration: 0.8s; }
+body.m-phone .log.expanded {
+  pointer-events: auto !important; overflow-y: auto; padding: 4px; gap: 6px; align-items: stretch; transform: none; z-index: 4;
+  left: var(--fly-x); right: auto; margin: 0; top: var(--top-h); bottom: auto; width: min(300px, calc(100vw - var(--fly-x) - var(--sa-r) - 8px));
+  max-height: calc(var(--fly-max-h) - var(--bar-h) - 8px);
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+body.m-phone .log.expanded .lg { display: flex !important; opacity: 1 !important; animation: none; min-height: 34px; align-items: center; font-size: 11.5px; padding: 4px 8px; }
+
+/* ── minimap: off by default, small when toggled on from the strip ── */
+body.m-phone .minimap { display: none; }
+body.m-phone.m-mm-on .minimap { display: block; width: 120px !important; height: auto !important; right: var(--sa-r); bottom: var(--sa-b); }
+
+body.m-phone .toasts { bottom: calc(var(--sa-b) + var(--bar-h) + 36px); max-width: calc(100vw - 2 * var(--fly-x)); }
+body.m-phone .toast { font-size: 12px; padding: 5px 12px; text-align: center; }
+
+/* ── advanced: command sheet as a fly-out beside the rail ── */
+body.m-phone .adv-col { top: var(--top-h); left: var(--fly-x); width: min(276px, calc(100vw - var(--fly-x) - var(--sa-r) - 8px)); max-height: calc(var(--fly-max-h) - var(--bar-h) - 8px); gap: 6px; }
+body.m-phone .adv-col:not(.open) { display: none; }
+body.m-phone .adv-obj { order: -1; } /* timed objectives first */
+body.m-phone .adv-panel .ph, body.m-phone .adv-obj .ph { padding: 7px 10px 5px; }
+body.m-phone .adv-body { padding: 0 10px 8px; gap: 7px; font-size: 12px; }
+body.m-phone .adv-stance { gap: 6px; padding: 0; background: none; border: 0; }
+body.m-phone .adv-stance button { min-height: 34px; font-size: 11px; border: 1px solid var(--line); }
+body.m-phone .adv-panel input[type=range] { height: 34px; margin: 0; }
+body.m-phone .adv-btns { gap: 6px; }
+body.m-phone .adv-caprow { gap: 6px; }
+body.m-phone .adv-btns .btn, body.m-phone .adv-caprow .btn, body.m-phone .adv-pact .btn { min-height: 34px; font-size: 11.5px; }
+body.m-phone .adv-pacts { gap: 6px; }
+body.m-phone .adv-pact .btn { min-width: 34px; }
+body.m-phone .adv-o { min-height: 34px; padding: 5px 10px; }
+body.m-phone .adv-note { font-size: 11px; }
+body.m-phone .adv-docs { padding: 12px; }
+body.m-phone .adv-brs { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+body.m-phone .adv-br { padding: 7px; }
+body.m-phone .adv-lv { font-size: 11px; padding: 5px 6px; }
+body.m-phone .adv-lv-h small { font-size: 9.5px; }
+body.m-phone .adv-br-f .btn { min-height: 34px; white-space: normal; }
+body.m-phone .help-adv-grid { grid-template-columns: 1fr 1fr; }
+
+/* ── context menu: compact, two columns when long (class set by context.ts) ── */
+body.m-phone .ctxmenu { width: 260px; }
+body.m-phone .ctxmenu.two { width: 420px; }
+body.m-phone .cm-head { padding: 7px 10px; gap: 8px; }
+body.m-phone .cm-head b { font-size: 13px; }
+body.m-phone .cm-list { padding: 4px; display: flex; flex-direction: column; gap: 6px; }
+body.m-phone .cm-list > * { flex: none; }
+body.m-phone .ctxmenu.two .cm-list { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); overflow-x: hidden; column-gap: 6px; row-gap: 6px; align-content: start; }
+body.m-phone .ctxmenu.two .cm-sep, body.m-phone .ctxmenu.two .cm-row.sub.opened { grid-column: 1 / -1; }
+body.m-phone .cm-row { min-width: 0; min-height: 38px; padding: 3px 6px; gap: 7px; font-size: 12px; }
+body.m-phone .cm-ic { width: 24px; height: 24px; font-size: 12px; }
+body.m-phone .cm-lb small { font-size: 10.5px; }
+body.m-phone .cm-sep { margin: 0 6px; }
+body.m-phone .cm-build { margin-top: 6px; }
+body.m-phone .cm-build { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+body.m-phone .ctxmenu:not(.two) .cm-build:not(.cm-sub) { grid-template-columns: 1fr 1fr; }
+body.m-phone .cm-build.cm-sub { grid-template-columns: 1fr; gap: 0; }
+body.m-phone .ctxmenu.two .cm-build.cm-sub { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 6px; }
+body.m-phone .cm-bt { min-height: 44px; padding: 5px; column-gap: 5px; }
+body.m-phone .cm-bt img { width: 24px; height: 24px; padding: 3px; }
+body.m-phone .cm-bt-n { font-size: 11.5px; }
+
+/* ── tutorial on phones: compact cards, a one/two-line "Ora tocca a te" bar ── */
+body.m-phone .tut-card { padding: 8px 10px; }
+body.m-phone .tut-card h3 { font-size: 14.5px; margin: 3px 0 4px; }
+body.m-phone .tut-text p { font-size: 12px; line-height: 1.36; margin-bottom: 4px; }
+body.m-phone .tut-kick { font-size: 9.5px; }
+body.m-phone .tut-foot { margin-top: 5px; gap: 6px; }
+body.m-phone .tut-foot .btn { min-height: 34px; padding: 0 10px; font-size: 12px; }
+body.m-phone .tut-card.mode-bar, body.m-phone .tut-card.mode-done { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 3px 3px 3px 10px; }
+body.m-phone .tut-bar-main { display: block; padding: 0; flex: 1 1 250px; min-width: 0; }
+body.m-phone .tut-card.mode-bar .tut-kick, body.m-phone .tut-card.mode-done .tut-kick { display: inline; margin-right: 6px; }
+body.m-phone .tut-card.mode-bar .tut-kick b, body.m-phone .tut-card.mode-done .tut-kick b { display: none; }
+body.m-phone .tut-card.mode-bar .tut-kick span, body.m-phone .tut-card.mode-done .tut-kick span { color: var(--accent); }
+body.m-phone .tut-do-text { display: inline; margin: 0; font-size: 11.5px; line-height: 1.35; }
+body.m-phone .tut-card.mode-done .tut-ok.big { display: inline; margin: 0; padding: 1px 6px; font-size: 11.5px; }
+body.m-phone .tut-ok, body.m-phone .tut-hint { font-size: 11px; margin-top: 3px; padding: 2px 7px; }
+body.m-phone .tut-bar-btns { flex-direction: row; gap: 6px; justify-content: flex-end; flex: 0 0 auto; margin-left: auto; }
+body.m-phone .tut-bar-btns .btn { min-height: 34px; padding: 0 9px; font-size: 11.5px; }
+body.m-phone .tut-ib { width: 34px; height: 34px; }

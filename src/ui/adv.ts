@@ -411,15 +411,22 @@ export class AdvHud {
     this.attention = false;
     this.col.classList.remove('open');
     this.closeDoctrinePanel();
-    // the attacks list joins the left column so the two never overlap
-    const atk = this.hud.attacksEl;
-    if (human) this.col.appendChild(atk);
-    else if (atk.parentElement !== this.hud.root) this.hud.root.insertBefore(atk, this.hud.logEl);
+    this.placeAttacks();
     if (!on) return;
     game.on(ev => { if (this.game === game) this.onEvent(ev); });
     this.syncWorkers(true);
     this.syncFront();
     this.update(performance.now(), true);
+  }
+
+  /** The attacks list joins the left column (desktop / tablet, advanced) so the two never overlap;
+   *  on phones it stays in the HUD's alert column as its own fly-out. */
+  placeAttacks(): void {
+    const atk = this.hud.attacksEl;
+    const human = !!this.game?.adv && !!this.game.humanId;
+    const phone = document.body.classList.contains('m-phone');
+    if (human && !phone) { if (atk.parentElement !== this.col || this.col.lastElementChild !== atk) this.col.appendChild(atk); }
+    else if (atk.parentElement !== this.hud.lcol) this.hud.lcol.appendChild(atk);
   }
 
   setSheet(open: boolean): void {
@@ -595,10 +602,10 @@ export class AdvHud {
     if (d.researching) {
       const p = Math.max(0, Math.min(1, (g.tick - d.startTick) / Math.max(1, d.doneTick - d.startTick)));
       setText(this.docTxt, `${DOCTRINE_LABEL[d.researching]} ${ROMAN[d.level[d.researching] + 1] ?? ''} · ${Math.round(p * 100)}%`);
-      this.docBar.style.width = `${p * 100}%`;
+      this.setDocBar(`${Math.round(p * 1000) / 10}%`);
     } else {
       setText(this.docTxt, DOCTRINE_BRANCHES.map(b => `${DOCTRINE_LABEL[b].split(' ')[0]} ${d.level[b]}`).join(' · '));
-      this.docBar.style.width = '0%';
+      this.setDocBar('0%');
     }
     this.docBtn.classList.toggle('busy', !!d.researching);
     this.fleetBtn.classList.toggle('on', aimOf(this.c.renderer)?.kind === 'fleet');
@@ -606,6 +613,9 @@ export class AdvHud {
     if (this.doctrineEl?.isConnected) this.renderDoctrines();
     else if (this.doctrineEl) { this.doctrineEl = null; this.closeDoctrine = null; }
   }
+
+  private docW = '';
+  private setDocBar(w: string): void { if (w !== this.docW) { this.docW = w; this.docBar.style.width = w; } }
 
   private updatePacts(g: Game, adv: Adv, me: number): void {
     const list = pactsOf(adv, me);

@@ -13,6 +13,8 @@ import {
   type RGB, type Skin, type SkinId,
 } from './skins';
 import { fmt } from '../ui/format';
+import { onQualityChange, qualityProfile, type QualityProfile } from './quality';
+import { perf } from './perf';
 
 /** Generic UI font (kept for callers that drew text with it). */
 export const FONT = '"Inter", "SF Pro Text", "Segoe UI", system-ui, -apple-system, sans-serif';
@@ -83,6 +85,28 @@ export class Renderer {
   private blocked = new Set<number>();
   private advReasonKey = '';
   private advReason: string | null = null;
+  // ── frame skipping / quality ──
+  /** Active quality profile (src/render/quality.ts). */
+  profile: QualityProfile = qualityProfile();
+  /** Next frame must redraw (game, skin, size or quality changed). */
+  private forceDraw = true;
+  /** The last drawn frame contained something animated by wall-clock time (dashes, pulses, missiles…). */
+  private anim = false;
+  /** The last drawn frame drew interpolated units (their position depends on `alpha`). */
+  private drewUnits = false;
+  /** Everything the picture depends on, as of the last drawn frame (see needsDraw). */
+  private sigShown = new Float64Array(16);
+  private sigNow = new Float64Array(16);
+  private refsShown: unknown[] = [];
+  private lastDraw = -1e9;
+  private flushHeld = false;
+  private sweepGrad: CanvasGradient | null = null;
+  // label order cache (rebuilt once per tick)
+  private labelList: Player[] = [];
+  private labelTick = -1;
+  private labelGame: Game | null = null;
+  private budget = { n: 30 };
+  private labelInk = new WeakMap<RGB, string[]>();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -90,9 +114,22 @@ export class Renderer {
     this.fxEl = document.createElement('div');
     this.fxEl.className = 'fx-overlay';
     this.mountFx();
+    this.fx.lite = this.profile.liteFx;
     this.resize();
     onSkinChange(id => this.applySkin(id));
+    onQualityChange(p => this.setProfile(p));
   }
+
+  /** Apply a quality profile (pixel ratio, glow, sweep, frame cap, effects). */
+  setProfile(p: QualityProfile): void {
+    this.profile = p;
+    this.fx.lite = p.liteFx;
+    this.resize();
+    this.forceDraw = true;
+  }
+
+  /** Redraw on the next frame even if nothing seems to have changed. */
+  invalidate(): void { this.forceDraw = true; }
 
   private mountFx(): void {
     const p = this.canvas.parentElement;
@@ -105,6 +142,8 @@ export class Renderer {
     this.fx.theme = this.skin.fx;
     this.widthCache.clear();
     this.markers.clear();
+    this.sweepGrad = null;
+    this.forceDraw = true;
     if (this.layer) this.layer.setSkin(this.skin);
   }
 
@@ -122,17 +161,21 @@ export class Renderer {
     this.prev.clear(); this.trails.clear(); this.labelPos.clear(); this.cooldowns.clear();
     this.fx.clear();
     this.hoverTile = -1; this.selected = 0; this.aim = null;
+    this.labelTick = -1; this.labelGame = null; this.flushHeld = false;
+    this.forceDraw = true;
     this.mountFx();
   }
 
   resize(): void {
     const r = this.canvas.getBoundingClientRect();
     const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
-    this.dpr = Math.min(window.devicePixelRatio || 1, coarse ? 1.5 : 2);
+    this.dpr = Math.min(window.devicePixelRatio || 1, coarse ? 1.5 : 2, this.profile.dprCap);
     const w = Math.max(1, Math.round(r.width * this.dpr)), h = Math.max(1, Math.round(r.height * this.dpr));
     if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
     this.cam.setView(r.width, r.height);
     this.markers.clear();
+    this.sweepGrad = null;
+    this.forceDraw = true;
   }
 
   /** Call right before each game.step() so units can be interpolated. */
@@ -175,14 +218,21 @@ export class Renderer {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  render(alpha: number, now: number): void {
+  /**
+   * Update the map layers, then redraw the canvas if anything visible changed (or something is animating).
+   * `deferFlush` (lower quality levels, frames that ran a sim step): keep the pixel upload for the next frame.
+   * Returns true when the canvas was redrawn.
+   */
+  render(alpha: number, now: number, deferFlush = false): boolean {
     const g = this.game;
-    if (!g) return;
-    const dt = this.lastFrame ? now - this.lastFrame : 16;
+    if (!g) return false;
+    const dt = this.lastFrame ? Math.max(0, now - this.lastFrame) : 16;
     this.lastFrame = now;
     this.frameMs += (Math.min(dt, 200) - this.frameMs) * 0.08;
     this.cam.update(dt);
 
+    const P = performance;
+    const t0 = P.now();
     const fog = this.fog;
     if (!fog) {
       if (g.trackChanges && g.changed.length) { this.layer.apply(g.changed); g.changed.length = 0; }
@@ -191,14 +241,27 @@ export class Renderer {
       // flipped are repainted from fog.changed (a mass reveal repaints the whole layer once)
       if (g.changed.length) { if (g.trackChanges) this.layer.apply(g.changed, true); g.changed.length = 0; }
       if (fog.changed.length) {
+        const tf = P.now();
         if (fog.changed.length > g.N / 4) this.layer.fullPaint(); else this.layer.apply(fog.changed);
         fog.changed.length = 0;
+        perf.add('fog', P.now() - tf);
       }
     }
     const relChanged = this.relations.update();
-    if (relChanged) { this.layer.recolor(relChanged); this.markers.clear(); }
-    this.layer.flush();
-    this.layer.updateGlow(now);
+    if (relChanged) { this.layer.recolor(relChanged); this.markers.clear(); this.labelTick = -1; }
+    if (deferFlush && !this.flushHeld && this.layer.pending) this.flushHeld = true;
+    else { this.layer.flush(); this.flushHeld = false; }
+    const prof = this.profile;
+    this.layer.updateGlow(now, prof.glow, this.cam.scale < 4, prof.glowMs);
+    this.updateFxCentre(now);
+    perf.add('layer', P.now() - t0);
+
+    if (!this.needsDraw(alpha, now)) return false;
+    const t1 = P.now();
+    this.lastDraw = now;
+    this.forceDraw = false;
+    this.anim = false;
+    this.drewUnits = false;
 
     const c = this.ctx, cam = this.cam;
     c.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
@@ -211,19 +274,98 @@ export class Renderer {
     if (shx || shy) c.translate(shx, shy);
 
     this.drawMap(c);
+    let a = P.now(), b: number;
     this.drawGrid(c);
     this.drawHover(c);
-    if (this.spawn) this.drawSpawn(c, now);
-    else {
+    b = P.now(); perf.add('d.grid', b - a); a = b;
+    if (this.spawn) {
+      this.drawSpawn(c, now);
+      b = P.now(); perf.add('d.fx', b - a); a = b;
+    } else {
       if (g.advanced && g.adv) this.drawFocusRings(c, now);
       this.drawStructures(c);
       if (g.advanced && g.adv) this.drawAdvMarkers(c, now);
+      b = P.now(); perf.add('d.struct', b - a); a = b;
       if (this.showLabels) this.drawLabels(c);
+      b = P.now(); perf.add('d.labels', b - a); a = b;
       this.drawUnits(c, alpha, now);
+      b = P.now(); perf.add('d.units', b - a); a = b;
       this.fx.draw(c, cam, now);
       this.drawAim(c, now);
+      if (this.fx.active) this.anim = true;
     }
-    this.updateFxCentre(now);
+    if (prof.sweep === 'canvas' && this.skin.id === 'radar') this.drawSweep(c, now);
+    perf.add('d.fx', P.now() - a);
+    perf.add('draw', P.now() - t1);
+    return true;
+  }
+
+  /**
+   * Skip the redraw when the picture would be identical to the last one: same camera, tick, interpolation,
+   * hover/selection/aim, layer pixels, labels toggle, and nothing animated by time. Lower quality levels also cap
+   * the redraw rate (profile.fpsCap).
+   */
+  private needsDraw(alpha: number, now: number): boolean {
+    const cam = this.cam, g = this.game, s = this.sigNow, sp = this.spawn;
+    s[0] = cam.x; s[1] = cam.y; s[2] = cam.scale; s[3] = cam.viewW; s[4] = cam.viewH;
+    s[5] = g.tick; s[6] = this.drewUnits ? alpha : 0; s[7] = this.hoverTile; s[8] = this.selected;
+    s[9] = this.layer.version; s[10] = this.showLabels ? 1 : 0; s[11] = sp?.pick?.x ?? -1; s[12] = sp?.pick?.y ?? -1;
+    s[13] = this.dpr; s[14] = sp ? sp.color : -1; s[15] = this.fx.active ? 1 : 0;
+    const refs = this.refsShown;
+    let changed = this.forceDraw || this.anim || this.fx.active || cam.moving
+      || (this.profile.sweep === 'canvas' && this.skin.id === 'radar')
+      || refs[0] !== this.aim || refs[1] !== this.aimReason || refs[2] !== sp || refs[3] !== g || refs[4] !== sp?.name;
+    if (!changed) {
+      const o = this.sigShown;
+      for (let k = 0; k < 16; k++) if (o[k] !== s[k]) { changed = true; break; }
+    }
+    if (!changed) return false;
+    // pixels of this tick are held for the next frame: if nothing is moving, draw once then instead of twice
+    if (this.flushHeld && !this.forceDraw && !this.drewUnits && !this.anim && !this.fx.active && !cam.moving
+      && (this.profile.sweep !== 'canvas' || this.skin.id !== 'radar') && this.onlyTickChanged()) return false;
+    const cap = this.profile.fpsCap;
+    const since = now - this.lastDraw;
+    if (cap && !this.forceDraw && since >= 0 && since < 1000 / cap - 4) return false;
+    this.sigShown.set(s);
+    refs[0] = this.aim; refs[1] = this.aimReason; refs[2] = sp; refs[3] = g; refs[4] = sp?.name;
+    return true;
+  }
+
+  /** Only the sim tick / layer pixels differ from the last drawn frame (camera, hover, aim… unchanged). */
+  private onlyTickChanged(): boolean {
+    const o = this.sigShown, s = this.sigNow, refs = this.refsShown;
+    for (let k = 0; k < 16; k++) if (k !== 5 && k !== 9 && o[k] !== s[k]) return false;
+    return refs[0] === this.aim && refs[1] === this.aimReason && refs[2] === this.spawn && refs[3] === this.game;
+  }
+
+  /** Medium quality on the radar skin: the rotating sweep drawn as a wedge on the canvas (no full-screen layer). */
+  private drawSweep(c: CanvasRenderingContext2D, now: number): void {
+    const cc = c as CanvasRenderingContext2D & { createConicGradient?: (a: number, x: number, y: number) => CanvasGradient };
+    if (typeof cc.createConicGradient !== 'function') return;
+    const cam = this.cam;
+    const cx = this.fxCx > -1e8 ? this.fxCx : cam.viewW / 2, cy = this.fxCy > -1e8 ? this.fxCy : cam.viewH / 2;
+    const R = Math.hypot(Math.max(cx, cam.viewW - cx), Math.max(cy, cam.viewH - cy)) + 2;
+    if (!this.sweepGrad) {
+      // CSS: conic-gradient(from 0deg, transparent 0 300deg, rgba(70,255,150,.03) 320deg, rgba(70,255,150,.16) 360deg)
+      const gr = cc.createConicGradient(-Math.PI / 2, 0, 0);
+      gr.addColorStop(0, 'rgba(70,255,150,0)');
+      gr.addColorStop(300 / 360, 'rgba(70,255,150,0)');
+      gr.addColorStop(320 / 360, 'rgba(70,255,150,0.03)');
+      gr.addColorStop(1, 'rgba(70,255,150,0.16)');
+      this.sweepGrad = gr;
+    }
+    const rot = ((now % 7000) / 7000) * Math.PI * 2;
+    c.save();
+    c.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    c.translate(cx, cy);
+    c.rotate(rot);
+    c.fillStyle = this.sweepGrad;
+    c.beginPath();
+    c.moveTo(0, 0);
+    c.arc(0, 0, R, -Math.PI / 2 + (300 / 360) * Math.PI * 2, -Math.PI / 2 + Math.PI * 2);
+    c.closePath();
+    c.fill();
+    c.restore();
   }
 
   /** The radar sweep / vignette overlay follows the human's centroid. */
@@ -250,10 +392,20 @@ export class Renderer {
     const w = x1 - x0, h = y1 - y0;
     const dx = cam.toScreenX(x0), dy = cam.toScreenY(y0), dw = w * cam.scale, dh = h * cam.scale;
     const smooth = cam.scale < 1.5;
+    const P = performance, t0 = P.now();
     c.imageSmoothingEnabled = smooth;
     c.imageSmoothingQuality = 'high';
     c.drawImage(L.canvas, x0, y0, w, h, dx, dy, dw, dh);
-    if (sk.glow > 0) {
+    const t1 = P.now();
+    const mode = this.profile.glow;
+    if (sk.glow > 0 && mode === 'merged' && L.glowMix) {
+      c.save();
+      c.globalCompositeOperation = 'lighter';
+      c.imageSmoothingEnabled = true;
+      c.imageSmoothingQuality = 'low';
+      c.drawImage(L.glowMix, x0 / 2, y0 / 2, w / 2, h / 2, dx, dy, dw, dh);
+      c.restore();
+    } else if (sk.glow > 0 && mode === 'full') {
       c.save();
       c.globalCompositeOperation = 'lighter';
       c.imageSmoothingEnabled = true;
@@ -266,11 +418,14 @@ export class Renderer {
       c.drawImage(L.glow2, x0 / 2, y0 / 2, w / 2, h / 2, dx, dy, dw, dh);
       c.restore();
     }
+    const t2 = P.now();
     c.imageSmoothingEnabled = smooth;
     c.drawImage(L.borders, x0, y0, w, h, dx, dy, dw, dh);
     c.strokeStyle = sk.frame;
     c.lineWidth = 1;
     c.strokeRect(cam.toScreenX(0) - 0.5, cam.toScreenY(0) - 0.5, g.W * cam.scale + 1, g.H * cam.scale + 1);
+    perf.add('d.glow', t2 - t1);
+    perf.add('d.map', t1 - t0 + P.now() - t2);
   }
 
   // ── grid & range overlays ─────────────────────────────────────────────────
@@ -471,13 +626,18 @@ export class Renderer {
 
   private drawLabels(c: CanvasRenderingContext2D): void {
     const g = this.game, cam = this.cam, sk = this.skin, rel = this.relations.rel;
-    const list: Player[] = [];
-    for (let id = 1; id < g.players.length; id++) {
-      const p = g.players[id];
-      if (p.alive && p.tiles > 0) list.push(p);
+    const list = this.labelList;
+    if (this.labelTick !== g.tick || this.labelGame !== g) {
+      // order only changes with the sim (tiles, deaths) or relations: rebuild once per tick
+      this.labelTick = g.tick; this.labelGame = g;
+      list.length = 0;
+      for (let id = 1; id < g.players.length; id++) {
+        const p = g.players[id];
+        if (p.alive && p.tiles > 0) list.push(p);
+      }
+      list.sort((a, b) => REL_PRIO[rel[b.id]] - REL_PRIO[rel[a.id]] || b.tiles - a.tiles);
     }
-    list.sort((a, b) => REL_PRIO[rel[b.id]] - REL_PRIO[rel[a.id]] || b.tiles - a.tiles);
-    const budget = { n: 30 };
+    const budget = this.budget; budget.n = 30;
     const placed = this.placed; placed.length = 0;
     const me = g.humanId;
     c.textAlign = 'center';
@@ -517,9 +677,20 @@ export class Renderer {
     if ('letterSpacing' in c) (c as any).letterSpacing = '0px';
   }
 
+  /** CSS strings derived from a player's edge colour, built once per colour instead of per label per frame. */
+  private inks(ec: RGB): string[] {
+    let v = this.labelInk.get(ec);
+    if (!v) {
+      v = [css(ec, 0.28), css(mix(ec, WHITE, 0.25)), css(ec, 0.4), css(mix(ec, WHITE, 0.35)), css(ec, 0.55), css(ec), css(mix(ec, WHITE, 0.5))];
+      this.labelInk.set(ec, v);
+    }
+    return v;
+  }
+
   private drawLabel(c: CanvasRenderingContext2D, p: Player, name: string, r: number, sx: number, sy: number, f: number, w: number, troops = true): void {
     const sk = this.skin, g = this.game;
     const ec = this.layer.edgeRgb[p.id] ?? WHITE;
+    const ink = this.inks(ec);
     const traitor = p.traitorUntil > g.tick;
     const nameY = sy - f * 0.28;
     c.font = this.labelFont(f);
@@ -527,20 +698,20 @@ export class Renderer {
     let fill: string;
     switch (sk.id) {
       case 'radar':
-        c.lineWidth = Math.max(2, f * 0.3); c.strokeStyle = css(ec, 0.28); c.strokeText(name, sx, nameY);
-        fill = css(mix(ec, WHITE, 0.25));
+        c.lineWidth = Math.max(2, f * 0.3); c.strokeStyle = ink[0]; c.strokeText(name, sx, nameY);
+        fill = ink[1];
         break;
       case 'holo':
-        c.lineWidth = Math.max(2, f * 0.34); c.strokeStyle = css(ec, 0.4); c.strokeText(name, sx, nameY);
+        c.lineWidth = Math.max(2, f * 0.34); c.strokeStyle = ink[2]; c.strokeText(name, sx, nameY);
         fill = '#ffffff';
         break;
       case 'tat':
         c.lineWidth = Math.max(2.5, f * 0.22); c.strokeStyle = sk.halo; c.strokeText(name, sx, nameY);
-        fill = r === R_NEUTRAL || r === R_TRIBE ? '#e2e3ca' : css(mix(ec, WHITE, 0.35));
+        fill = r === R_NEUTRAL || r === R_TRIBE ? '#e2e3ca' : ink[3];
         break;
       default: {
         const inv = r === R_ME || r === R_ENEMY;
-        c.lineWidth = Math.max(2, f * 0.2); c.strokeStyle = inv ? css(ec, 0.55) : sk.halo; c.strokeText(name, sx, nameY);
+        c.lineWidth = Math.max(2, f * 0.2); c.strokeStyle = inv ? ink[4] : sk.halo; c.strokeText(name, sx, nameY);
         fill = inv ? '#ffffff' : '#14161a';
       }
     }
@@ -554,11 +725,11 @@ export class Renderer {
     const tt = (sk.id === 'radar' ? '▸' : '') + fmt(p.troops);
     c.font = `${sk.id === 'holo' ? '500 ' : sk.id === 'tat' ? '500 ' : ''}${tf}px ${sk.mono}`;
     let sub: string;
-    if (sk.id === 'radar') sub = css(ec);
+    if (sk.id === 'radar') sub = ink[5];
     else if (sk.id === 'holo') {
-      c.strokeStyle = css(ec); c.lineWidth = 1.5;
+      c.strokeStyle = ink[5]; c.lineWidth = 1.5;
       c.beginPath(); c.moveTo(sx - w / 2, sy + f * 0.2); c.lineTo(sx + w / 2, sy + f * 0.2); c.stroke();
-      sub = css(mix(ec, WHITE, 0.5));
+      sub = ink[6];
     } else if (sk.id === 'tat') {
       c.lineWidth = 3; c.strokeStyle = sk.halo; c.strokeText(tt, sx, ty);
       sub = '#cfd0bd';
@@ -692,6 +863,7 @@ export class Renderer {
       const wx = pv ? pv[0] + (u.x - pv[0]) * alpha : u.x;
       const wy = pv ? pv[1] + (u.y - pv[1]) * alpha : u.y;
       if (wx < bx0 - 4 || wx > bx1 + 4 || wy < by0 - 4 || wy > by1 + 4) continue;
+      this.drewUnits = true;
       const tr = this.trails.get(u.id);
       if (pv) {
         const dx = u.x - pv[0], dy = u.y - pv[1];
@@ -704,6 +876,7 @@ export class Renderer {
     }
     for (const u of nukes) {
       if (fogOn && !this.friendly(u.owner) && !this.seesXY(u.x, u.y)) continue;
+      this.anim = true; this.drewUnits = true;
       this.drawNuke(c, u, alpha, now);
     }
   }
@@ -883,6 +1056,7 @@ export class Renderer {
   private drawAim(c: CanvasRenderingContext2D, now: number): void {
     const g = this.game, cam = this.cam, sk = this.skin;
     if (!this.aim || this.hoverTile < 0) return;
+    this.anim = true;
     const x = g.xOf(this.hoverTile), y = g.yOf(this.hoverTile);
     const sx = cam.toScreenX(x + 0.5), sy = cam.toScreenY(y + 0.5);
     const advAim = this.aim.kind === 'focus' || this.aim.kind === 'fleet' || this.aim.kind === 'capital';
@@ -938,6 +1112,7 @@ export class Renderer {
   // ── spawn phase overlay ────────────────────────────────────────────────────
   private drawSpawn(c: CanvasRenderingContext2D, now: number): void {
     const sp = this.spawn!, cam = this.cam, sk = this.skin;
+    if (sp.pick) this.anim = true;
     const placed = this.placed; placed.length = 0;
     c.textAlign = 'center'; c.textBaseline = 'middle'; c.lineJoin = 'round';
     const f = Math.round(Math.max(10, Math.min(14, cam.scale * 4)));
@@ -1087,6 +1262,7 @@ export class Renderer {
       if (!f) continue;
       const sx = cam.toScreenX(f.x + 0.5), sy = cam.toScreenY(f.y + 0.5);
       if (sx < -R - 20 || sy < -R - 20 || sx > cam.viewW + R + 20 || sy > cam.viewH + R + 20) continue;
+      this.anim = true;
       c.save();
       c.strokeStyle = sk.accent;
       c.fillStyle = sk.accent;
@@ -1162,6 +1338,7 @@ export class Renderer {
         if (fog && !fog.visible[s.tile]) continue;
         let sx = cam.toScreenX(s.x + 0.5), sy = cam.toScreenY(s.y + 0.5);
         if (structsShown) { sx -= sSize * 0.62; sy -= sSize * 0.62; }
+        if (s.owner === me) this.anim = true;
         const k = 7 + (s.owner === me ? 1.5 : 0);
         c.save();
         if (s.owner === me) {
@@ -1187,6 +1364,7 @@ export class Renderer {
     const col = this.colorOf(u.owner);
     const pt = u.ext.patrol as { x: number; y: number } | undefined;
     if (mine && pt) {
+      this.anim = true;
       const px = cam.toScreenX(pt.x + 0.5), py = cam.toScreenY(pt.y + 0.5), R = ADV.patrolRadius * cam.scale;
       c.save();
       c.strokeStyle = sk.accent;

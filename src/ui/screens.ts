@@ -5,6 +5,25 @@ import { h } from './dom';
 import { hexColor, parseHex } from './format';
 import { STRUCTURE_KEY, STRUCTURE_LABEL, glyphURL } from '../render/icons';
 import { SKIN_IDS, SKIN_INFO, isSkinId, setSkin, skinId, type SkinId } from '../render/skins';
+import { QUALITY_LABEL, QUALITY_SETTINGS, onQualityChange, qualityLevel, qualitySetting, setQuality } from '../render/quality';
+
+/** "Qualità grafica" selector (Auto / Alta / Media / Bassa), stored in localStorage by setQuality. */
+function qualitySeg(): HTMLElement {
+  const seg = h('div', { class: 'seg quality' });
+  const hint = h('small', { class: 'q-hint dim' });
+  const paint = () => {
+    const cur = qualitySetting();
+    [...seg.children].forEach((b, k) => b.classList.toggle('on', QUALITY_SETTINGS[k] === cur));
+    hint.textContent = cur === 'auto' ? `Ora: ${QUALITY_LABEL[qualityLevel()]}. Si adatta da sola se il gioco rallenta.` : '';
+  };
+  for (const q of QUALITY_SETTINGS) {
+    seg.appendChild(h('button', { type: 'button', title: q === 'auto' ? 'Sceglie e adatta la qualità in base al dispositivo' : undefined, onclick: () => { setQuality(q); paint(); } }, QUALITY_LABEL[q]));
+  }
+  const wrap = h('div', { class: 'q-wrap' }, seg, hint);
+  const off = onQualityChange(() => { if (!wrap.isConnected) { off(); return; } paint(); });
+  paint();
+  return wrap;
+}
 
 export interface MatchConfig {
   map: 'world' | 'proc';
@@ -99,7 +118,7 @@ export class Screens {
   }
 
   // ── title ──────────────────────────────────────────────────────────────────
-  title(onPlay: () => void, onPlayAdv: () => void, onWatch: () => void, onHelp: () => void): void {
+  title(onPlay: () => void, onPlayAdv: () => void, onWatch: () => void, onHelp: () => void, onTutorial?: () => void): void {
     this.set(h('div', { class: 'scr title' },
       h('div', { class: 'title-box' },
         h('div', { class: 'logo' }, 'CAPTURE'),
@@ -108,9 +127,27 @@ export class Screens {
           h('button', { class: 'btn primary big', onclick: onPlay }, 'Partita normale'),
           h('button', { class: 'btn big adv-play', onclick: onPlayAdv, title: 'Fronti, capitali, rifornimenti, risorse, flotte, dottrine, patti, scenari e nebbia di guerra' },
             'Partita avanzata', h('small', null, 'Fronti · rifornimenti · dottrine · nebbia')),
+          onTutorial ? h('button', { class: 'btn big tut-play', onclick: onTutorial, title: 'Una partita guidata che si ferma e ti spiega ogni cosa' },
+            'Partita tutorial', h('small', null, 'Impara giocando, passo dopo passo')) : null,
           h('button', { class: 'btn big ghost', onclick: onWatch }, 'Guarda una partita'),
           h('button', { class: 'btn big ghost', onclick: onHelp }, 'Come si gioca')),
         h('p', { class: 'foot' }, 'Possiedi l’80% delle terre per vincere · ~240 avversari'))));
+  }
+
+  /** "Partita tutorial": choose where to start (and resume saved progress). */
+  tutorialStart(onFull: () => void, onAdvOnly: () => void, onResume: (() => void) | null, onBack: () => void, resumeLabel: string | null): void {
+    this.set(h('div', { class: 'scr title tut-start' },
+      h('div', { class: 'title-box' },
+        h('div', { class: 'logo sm' }, 'Tutorial'),
+        h('p', { class: 'tag' }, 'Una partita vera e guidata: il gioco si ferma e ti spiega ogni cosa, poi tocca a te.'),
+        h('div', { class: 'title-actions' },
+          onResume ? h('button', { class: 'btn primary big tut-resume', onclick: onResume },
+            'Riprendi', resumeLabel ? h('small', null, resumeLabel) : null) : null,
+          h('button', { class: `btn big${onResume ? ' adv-play' : ' primary'}`, onclick: onFull },
+            'Dall’inizio', h('small', null, 'Prima il gioco base, poi la modalità avanzata')),
+          h('button', { class: 'btn big adv-play', onclick: onAdvOnly },
+            'Solo modalità avanzata', h('small', null, 'Se conosci già il gioco base')),
+          h('button', { class: 'btn big ghost', onclick: onBack }, '‹ Indietro')))));
   }
 
   // ── setup ──────────────────────────────────────────────────────────────────
@@ -207,7 +244,8 @@ export class Screens {
       h('div', { class: 'setup-head' }, h('button', { type: 'button', class: 'btn ghost sm', onclick: onBack }, '‹ Indietro'), h('h2', null, advanced ? 'Partita avanzata' : 'Nuova partita')),
       humanRows,
       h('div', { class: 'grp' }, h('div', { class: 'row' }, h('label', null, 'Mappa'), mapCards), seedRow),
-      h('div', { class: 'grp' }, h('div', { class: 'row' }, h('label', null, 'Stile grafico'), skinCards)),
+      h('div', { class: 'grp' }, h('div', { class: 'row' }, h('label', null, 'Stile grafico'), skinCards),
+        h('div', { class: 'row' }, h('label', null, 'Qualità grafica'), qualitySeg())),
       h('div', { class: 'grp' },
         h('div', { class: 'row' }, h('label', null, 'Difficoltà'),
           seg<Difficulty>([['easy', 'Facile'], ['normal', 'Normale'], ['hard', 'Difficile']], () => cfg.difficulty, v => { cfg.difficulty = v; })),
@@ -256,6 +294,7 @@ export class Screens {
         h('h2', null, 'Pausa'),
         h('button', { class: 'btn primary big', onclick: onResume }, 'Riprendi'),
         h('button', { class: 'btn big', onclick: onHelp }, 'Come si gioca'),
+        h('div', { class: 'pause-q' }, h('label', null, 'Qualità grafica'), qualitySeg()),
         h('button', { class: 'btn big danger', onclick: onQuit }, 'Abbandona e nuova partita'))));
   }
 

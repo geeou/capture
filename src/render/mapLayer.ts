@@ -379,34 +379,74 @@ export class MapLayer {
     this.anyDirty = true;
   }
 
-  /** Upload dirty chunks to the canvases. */
+  /** True while changed pixels wait for flush(). */
+  get pending(): boolean { return this.anyDirty; }
+
+  /** Upload dirty chunks to the canvases (horizontal runs of dirty chunks go up in one call). */
   flush(): void {
     if (!this.anyDirty) return;
     const { W, H } = this.game;
-    for (let cy = 0; cy < this.chh; cy++) for (let cx = 0; cx < this.cw; cx++) {
-      const k = cy * this.cw + cx;
-      if (!this.dirty[k]) continue;
-      this.dirty[k] = 0;
-      const x = cx * CH, y = cy * CH, w = Math.min(CH, W - x), h = Math.min(CH, H - y);
-      this.ctx.putImageData(this.img, 0, 0, x, y, w, h);
-      this.bctx.putImageData(this.bimg, 0, 0, x, y, w, h);
+    const cw = this.cw, d = this.dirty;
+    for (let cy = 0; cy < this.chh; cy++) {
+      const row = cy * cw;
+      let cx = 0;
+      while (cx < cw) {
+        if (!d[row + cx]) { cx++; continue; }
+        let e = cx;
+        while (e + 1 < cw && d[row + e + 1]) e++;
+        for (let k = cx; k <= e; k++) d[row + k] = 0;
+        const x = cx * CH, y = cy * CH, w = Math.min((e - cx + 1) * CH, W - x), h = Math.min(CH, H - y);
+        this.ctx.putImageData(this.img, 0, 0, x, y, w, h);
+        this.bctx.putImageData(this.bimg, 0, 0, x, y, w, h);
+        cx = e + 1;
+      }
     }
     this.anyDirty = false;
     this.glowDirty = true;
     this.version++;
   }
 
-  /** Rebuild the blurred border copies (throttled; GPU downscales only). */
-  updateGlow(now: number): void {
-    if (!this.skin.glow || !this.glowDirty || now - this.lastGlow < 220) return;
-    this.glowDirty = false;
-    this.lastGlow = now;
-    const a = this.g2, b = this.g4;
-    a.imageSmoothingEnabled = true; a.imageSmoothingQuality = 'medium';
-    b.imageSmoothingEnabled = true; b.imageSmoothingQuality = 'medium';
-    a.clearRect(0, 0, this.glow2.width, this.glow2.height);
-    a.drawImage(this.borders, 0, 0, this.glow2.width, this.glow2.height);
-    b.clearRect(0, 0, this.glow4.width, this.glow4.height);
-    b.drawImage(this.glow2, 0, 0, this.glow4.width, this.glow4.height);
+  /** Pre-mixed glow (glow4 + glow2 at their designed strengths) for the 'merged' quality mode. */
+  glowMix: HTMLCanvasElement | null = null;
+  private mixDirty = true;
+  private mixG4 = true;
+
+  /**
+   * Rebuild the blurred border copies (throttled; GPU downscales only).
+   * mode 'merged' also mixes them into `glowMix` (one additive pass per frame instead of two);
+   * `withG4` = include the quarter-resolution copy (the renderer drops it when zoomed in); `minMs` = rebuild throttle.
+   */
+  updateGlow(now: number, mode: 'full' | 'merged' | 'off' = 'full', withG4 = true, minMs = 220): void {
+    if (!this.skin.glow || mode === 'off') return;
+    if (this.glowDirty && now - this.lastGlow >= minMs) {
+      this.glowDirty = false;
+      this.lastGlow = now;
+      this.mixDirty = true;
+      const a = this.g2, b = this.g4;
+      a.imageSmoothingEnabled = true; a.imageSmoothingQuality = 'medium';
+      b.imageSmoothingEnabled = true; b.imageSmoothingQuality = 'medium';
+      a.clearRect(0, 0, this.glow2.width, this.glow2.height);
+      a.drawImage(this.borders, 0, 0, this.glow2.width, this.glow2.height);
+      b.clearRect(0, 0, this.glow4.width, this.glow4.height);
+      b.drawImage(this.glow2, 0, 0, this.glow4.width, this.glow4.height);
+    }
+    if (mode !== 'merged' || (!this.mixDirty && this.mixG4 === withG4 && this.glowMix)) return;
+    if (!this.glowMix) {
+      this.glowMix = document.createElement('canvas');
+      this.glowMix.width = this.glow2.width; this.glowMix.height = this.glow2.height;
+    }
+    this.mixDirty = false;
+    this.mixG4 = withG4;
+    const m = this.glowMix.getContext('2d')!, k = this.skin.glow;
+    m.globalCompositeOperation = 'source-over';
+    m.globalAlpha = 1;
+    m.clearRect(0, 0, this.glowMix.width, this.glowMix.height);
+    m.globalCompositeOperation = 'lighter';
+    m.imageSmoothingEnabled = true; m.imageSmoothingQuality = 'low';
+    if (withG4) { m.globalAlpha = k * 0.6; m.drawImage(this.glow4, 0, 0, this.glowMix.width, this.glowMix.height); }
+    m.globalAlpha = k * 0.8;
+    m.drawImage(this.glow2, 0, 0);
+    m.globalAlpha = 1;
+    m.globalCompositeOperation = 'source-over';
   }
 }

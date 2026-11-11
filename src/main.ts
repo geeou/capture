@@ -1,6 +1,7 @@
 // CAPTURE — app shell: flow (title → setup → spawn → match → end), fixed-step loop, debug handle.
 import './style.css';
 import './mobile.css';
+import './perf.css';
 import { createGame } from './sim/index';
 import { Game, mulberry32 } from './sim/game';
 import { TICK_MS, type GameEvent, type MapData, type NationSeed, type StructureType } from './sim/types';
@@ -17,7 +18,10 @@ import { Screens, loadSetup, type MatchConfig } from './ui/screens';
 import { AdvActions, AdvHud, aimOf, putAim, type AdvCtl, type AnyAim } from './ui/adv';
 import type { ScenarioId } from './sim/adv/types';
 import { h, toast } from './ui/dom';
+import { Tutorial, loadTutorialProgress, type TutorialChapter } from './ui/tutorial';
 import { clock, fmt, pct, parseHex } from './ui/format';
+import { perf, PerfOverlay, PERF_KEYS } from './render/perf';
+import { governor, onQualityChange, qualityLabel, qualityLevel, qualityProfile, qualitySetting, setQuality, type QualitySetting } from './render/quality';
 
 type Phase = 'title' | 'setup' | 'loading' | 'spawn' | 'match';
 
@@ -76,6 +80,8 @@ class App implements Ctl, AdvCtl {
   private modalPaused = false;
   private titleDrift = 0;
   private hudEl: HTMLElement;
+  /** Guided tutorial match (null outside "Partita tutorial"). */
+  tut: Tutorial | null = null;
 
   constructor(root: HTMLElement) {
     const canvas = h('canvas', { class: 'view' });
@@ -101,8 +107,17 @@ class App implements Ctl, AdvCtl {
     });
     this.mobile = new MobileUI(this, { setAim: a => this.setAim(a), phase: () => this.phase });
     const onResize = () => { this.renderer.resize(); this.minimap.layout(); };
-    window.addEventListener('resize', onResize);
+    window.addEventListener('resize', onResize, { passive: true });
     new ResizeObserver(onResize).observe(canvas);
+    this.minimap.intervalMs = qualityProfile().minimapMs;
+    onQualityChange(p => {
+      // renderer applies its own part; the minimap follows the new pixel ratio
+      this.minimap.intervalMs = p.minimapMs;
+      if (this.game) this.minimap.layout();
+    });
+    // hidden page: rAF stops; forget the gap so the sim does not try to catch up and the governor ignores it
+    document.addEventListener('visibilitychange', () => { this.lastT = 0; governor.reset(); this.renderer.invalidate(); });
+    if (new URLSearchParams(location.search).get('perf') === '1') this.perfHud = new PerfOverlay(root);
     this.hud.setVisible(false);
     requestAnimationFrame(this.frame);
   }
@@ -198,6 +213,7 @@ class App implements Ctl, AdvCtl {
   }
 
   newGame(): void {
+    this.stopTutorial();
     this.ctxMenu.close();
     this.setAim(null);
     this.screens.closeModal();
@@ -209,6 +225,11 @@ class App implements Ctl, AdvCtl {
 
   // ── flow ───────────────────────────────────────────────────────────────────
   async showTitle(): Promise<void> {
+    this.stopTutorial();
+    this.ctxMenu.close();
+    this.setAim(null);
+    this.screens.closeModal();
+    document.body.classList.remove('paused', 'in-match');
     this.phase = 'title';
     this.hud.setVisible(false);
     document.body.classList.add('at-title');
@@ -226,7 +247,46 @@ class App implements Ctl, AdvCtl {
       () => { this.advMode = false; this.showSetup(false); },
       () => { this.advMode = true; this.showSetup(false); },
       () => { this.advMode = false; this.showSetup(true); },
-      () => this.openHelp());
+      () => this.openHelp(),
+      () => this.tutorialMenu());
+  }
+
+  // ── guided tutorial ────────────────────────────────────────────────────────
+  private tutorialMenu(): void {
+    const saved = loadTutorialProgress();
+    this.screens.tutorialStart(
+      () => this.startTutorial(1),
+      () => this.startTutorial(2),
+      saved ? () => this.startTutorial(saved.chapter, saved.step) : null,
+      () => this.showTitle(),
+      saved?.label ?? null);
+  }
+
+  /** Start (or restart) the guided tutorial at a chapter; `step` = step id or 1-based index within the chapter. */
+  startTutorial(chapter: TutorialChapter, step?: string | number): void {
+    this.stopTutorial();
+    this.advMode = chapter === 2;
+    this.tut = new Tutorial(this);
+    this.tut.begin(chapter, step);
+  }
+
+  stopTutorial(): void {
+    const t = this.tut;
+    if (!t) return;
+    this.tut = null;
+    t.dispose();
+  }
+
+  /** Called by the tutorial: open the normal setup for a classic or advanced match. */
+  playFromTutorial(advanced: boolean): void {
+    this.stopTutorial();
+    this.ctxMenu.close();
+    this.setAim(null);
+    this.screens.closeModal();
+    this.hud.setVisible(false);
+    document.body.classList.remove('paused', 'in-match', 'adv-match');
+    this.advMode = advanced;
+    this.showSetup(false);
   }
 
   private showSetup(spectate: boolean): void {
@@ -322,9 +382,6 @@ class App implements Ctl, AdvCtl {
   }
 
   startMatch(map: MapData, cfg: MatchConfig, spawn: { x: number; y: number } | null, speed = 1): Game {
-    this.ctxMenu.close();
-    this.screens.clear();
-    document.body.classList.remove('at-title');
     const game = createGame(map, {
       seed: cfg.seed,
       humanSpawn: spawn,
@@ -335,6 +392,15 @@ class App implements Ctl, AdvCtl {
       difficulty: cfg.difficulty,
       ...(cfg.advanced ? { advanced: true, scenario: cfg.scenario ?? 'libero', fog: cfg.fog !== false } : {}),
     });
+    if (spawn && !game.humanId) toast('Punto di partenza non valido: modalità spettatore', 'danger');
+    return this.attachMatch(game, speed);
+  }
+
+  /** Make `game` the running match (HUD, camera, events). Used by startMatch and by the tutorial. */
+  attachMatch(game: Game, speed = 1): Game {
+    this.ctxMenu.close();
+    this.screens.clear();
+    document.body.classList.remove('at-title');
     game.trackChanges = true;
     game.changed.length = 0;
     this.game = game;
@@ -348,7 +414,6 @@ class App implements Ctl, AdvCtl {
     this.stats = { peakShare: 0, peakTroops: 0, kills: 0, built: 0, nukes: 0, boats: 0, startTick: 0 };
     this.wholeFront = false;
     this.setAim(null);
-    if (spawn && !game.humanId) toast('Punto di partenza non valido: modalità spettatore', 'danger');
     const me = game.human;
     const cam = this.renderer.cam;
     if (me) cam.centerOn(me.spawnX, me.spawnY, Math.max(cam.fitScale() * 2, Math.min(cam.viewW, cam.viewH) / 150), false);
@@ -439,7 +504,7 @@ class App implements Ctl, AdvCtl {
 
   private showEnd(fromWin: boolean): void {
     const g = this.game;
-    if (this.phase !== 'match') return;
+    if (this.phase !== 'match' || this.tut) return;
     const me = g.humanId ? g.players[g.humanId] : null;
     const winner = g.winner ? g.players[g.winner] : null;
     if (this.endShown && !fromWin) return;
@@ -524,6 +589,7 @@ class App implements Ctl, AdvCtl {
   }
 
   private onKey(e: KeyboardEvent): boolean {
+    if (this.tut && this.phase === 'match' && this.tut.key(e)) return true;
     if (this.screens.modalOpen) {
       if (e.key === 'Escape') {
         this.screens.closeModal();
@@ -591,27 +657,46 @@ class App implements Ctl, AdvCtl {
   cpuMs = 0;
   simMs = 0;
   private lastErr = -1e9;
+  private perfHud: PerfOverlay | null = null;
   private frame = (now: number) => {
     requestAnimationFrame(this.frame);
+    if (document.hidden) return;
+    const interval = this.lastT ? now - this.lastT : 0;
     const c0 = performance.now();
-    const dt = this.lastT ? Math.min(250, now - this.lastT) : 16;
+    const drew = this.frameBody(now);
+    const cpu = performance.now() - c0;
+    perf.add('frame', cpu);
+    perf.add('interval', interval);
+    perf.commit(drew);
+    this.cpuMs += (cpu - this.cpuMs) * 0.05;
+    if (this.phase === 'match' && this.speed > 0 && !this.screens.modalOpen && interval > 0) governor.feed(now, interval, cpu, drew);
+    if (this.perfHud) this.perfHud.update(now, () => this.perfLines());
+  };
+
+  /** One animation frame: input, sim catch-up, map update + draw, minimap, HUD. Returns true if the map redrew. */
+  frameBody(now: number): boolean {
+    const P = performance;
+    const dt = this.lastT ? Math.max(0, Math.min(250, now - this.lastT)) : 16;
     this.lastT = now;
     this.input.update(dt);
     const g = this.game;
-    if (this.phase === 'match' && g && !g.over && this.speed > 0) {
+    let steps = 0;
+    if (this.phase === 'match' && g && !g.over && this.speed > 0 && !this.tut?.hold) {
       this.acc += dt * this.speed;
       const maxSteps = Math.max(2, this.speed * 2);
-      let steps = 0;
-      const t0 = performance.now();
+      const budget = qualityProfile().simBudgetMs;
+      const t0 = P.now();
       while (this.acc >= TICK_MS && steps < maxSteps) {
         this.renderer.beforeStep();
         g.step();
         this.acc -= TICK_MS;
         steps++;
-        if (performance.now() - t0 > 40) break; // never spiral on slow machines
+        if (P.now() - t0 > budget) break; // never spiral on slow machines
       }
       if (this.acc >= TICK_MS * 2) { this.acc = TICK_MS * 0.5; this.stepBudgetHit++; }
-      if (steps) this.simMs += ((performance.now() - t0) / steps - this.simMs) * 0.1;
+      const simT = P.now() - t0;
+      perf.add('sim', simT);
+      if (steps) this.simMs += (simT / steps - this.simMs) * 0.1;
       const me = g.human;
       if (me && me.alive) {
         const sh = g.share(me.id);
@@ -629,19 +714,69 @@ class App implements Ctl, AdvCtl {
       this.updateAimReason();
     }
     const alpha = this.phase === 'match' ? Math.min(1, this.acc / TICK_MS) : 1;
+    let drew = false;
     try {
-      this.renderer.render(alpha, now);
-      if (this.phase === 'match' || this.phase === 'spawn') this.minimap.draw(now);
+      drew = this.renderer.render(alpha, now, steps > 0 && qualityProfile().deferFlush);
+      let t = P.now();
+      if (this.phase === 'match' || this.phase === 'spawn') { this.minimap.draw(now); const t2 = P.now(); perf.add('minimap', t2 - t); t = t2; }
       if (this.phase === 'match') { this.hud.update(now); this.advHud.update(now); }
+      if (this.tut && this.phase === 'match') this.tut.frame(now);
+      perf.add('hud', P.now() - t);
     } catch (err) {
       if (now - this.lastErr > 5000) { this.lastErr = now; console.error(err); }
     }
-    this.cpuMs += (performance.now() - c0 - this.cpuMs) * 0.05;
-  };
+    return drew;
+  }
+
+  /** Text of the ?perf=1 overlay. */
+  private perfLines(): string[] {
+    const r = this.renderer, iv = perf.stat('interval'), fr = perf.stat('frame'), sim = perf.stat('sim'), dr = perf.stat('draw', true);
+    const fps = iv.avg > 0 ? Math.round(1000 / iv.avg) : 0;
+    return [
+      `${fps} fps · frame ${iv.p50.toFixed(1)}/${iv.p95.toFixed(1)} ms (p50/p95)`,
+      `cpu ${fr.p50.toFixed(1)}/${fr.p95.toFixed(1)} · sim ${sim.avg.toFixed(1)} · draw ${dr.avg.toFixed(1)} · ${Math.round(perf.drawnRatio() * 100)}% drawn`,
+      `Q ${qualityLabel()} · ${r.canvas.width}×${r.canvas.height} @${r.dpr} (dev ${+(window.devicePixelRatio || 1).toFixed(2)})`,
+    ];
+  }
 
   perf() {
-    return { fps: Math.round(1000 / this.renderer.frameMs), cpuMs: +this.cpuMs.toFixed(2), simMsPerTick: +this.simMs.toFixed(2), droppedCatchUps: this.stepBudgetHit };
+    const r = this.renderer;
+    const all = perf.all();
+    const iv = all.interval;
+    return {
+      fps: iv.avg > 0 ? Math.round(1000 / iv.avg) : Math.round(1000 / r.frameMs),
+      frames: perf.frames,
+      drawnRatio: +perf.drawnRatio().toFixed(2),
+      quality: { setting: qualitySetting(), level: qualityLevel(), governorWindow: { intervalMs: +governor.lastInterval.toFixed(1), cpuMs: +governor.lastCpu.toFixed(2) } },
+      canvas: `${r.canvas.width}x${r.canvas.height}`,
+      view: `${r.cam.viewW}x${r.cam.viewH}`,
+      dpr: r.dpr,
+      devicePixelRatio: window.devicePixelRatio || 1,
+      ms: all,
+      cpuMs: +this.cpuMs.toFixed(2), simMsPerTick: +this.simMs.toFixed(2), droppedCatchUps: this.stepBudgetHit,
+    };
   }
+
+  /**
+   * CPU benchmark: run `frames` loop bodies back to back with a simulated 60 Hz clock (works with the pane hidden,
+   * where rAF is throttled). Returns per-stage avg / p50 / p95 over those frames.
+   */
+  bench(frames = 200, hz = 60): ReturnType<App['perf']> {
+    perf.reset();
+    let now = performance.now();
+    for (let i = 0; i < frames; i++) {
+      now += 1000 / hz;
+      const c0 = performance.now();
+      const drew = this.frameBody(now);
+      perf.add('frame', performance.now() - c0);
+      perf.add('interval', 1000 / hz);
+      perf.commit(drew);
+    }
+    this.lastT = 0;
+    return this.perf();
+  }
+
+  setQuality(q: QualitySetting): void { setQuality(q); }
 
   /** Advanced, desktop mouse: show the focus-attack preview while hovering land a click would attack by land. */
   private updatePassiveAim(): void {
@@ -682,11 +817,19 @@ const app = new App(root);
   get camera() { return app.renderer.cam; },
   get renderer() { return app.renderer; },
   perf: () => app.perf(),
+  bench: (frames?: number, hz?: number) => app.bench(frames, hz),
+  quality: (q?: QualitySetting) => { if (q) app.setQuality(q); return { setting: qualitySetting(), level: qualityLevel() }; },
+  perfKeys: PERF_KEYS,
   app,
 };
+(window as any).tutorial = null;
 
 const params = new URLSearchParams(location.search);
-if (params.get('auto') === '1') {
+if (params.get('tutorial') === '1') {
+  const ch = params.get('chapter') === '2' ? 2 : 1;
+  const st = params.get('step');
+  app.startTutorial(ch, st ? (/^\d+$/.test(st) ? Number(st) : st) : undefined);
+} else if (params.get('auto') === '1') {
   const num = (k: string) => (params.has(k) ? Number(params.get(k)) : undefined);
   const x = num('x'), y = num('y');
   const diff = params.get('difficulty') ?? params.get('diff');

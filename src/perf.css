@@ -1,0 +1,50 @@
+/* CAPTURE — graphics quality cuts. body[data-q] is set by src/render/quality.ts ("high" | "medium" | "low").
+   "high" changes nothing. Rules here only override costly effects of style.css / skins.css / mobile.css. */
+
+/* ── ?perf=1 overlay ─────────────────────────────────────────────────────── */
+.perf-hud {
+  position: fixed; z-index: 9999; left: 50%; top: calc(env(safe-area-inset-top, 0px) + 2px); transform: translateX(-50%);
+  pointer-events: none; white-space: pre; padding: 3px 7px; background: rgba(0, 0, 0, 0.72); color: #e8ffe8;
+  font: 10px/1.35 ui-monospace, Menlo, monospace; text-shadow: none; text-transform: none; letter-spacing: 0; border-radius: 3px;
+}
+
+/* ── "Qualità grafica" selector (setup + pause) ──────────────────────────── */
+.q-wrap { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.q-hint { color: var(--dim); font-size: 11px; line-height: 1.3; }
+.q-hint:empty { display: none; }
+.pause-q { display: flex; flex-direction: column; gap: 5px; text-align: left; padding: 2px 0; }
+.pause-q > label { font-size: 11px; color: var(--dim); text-transform: var(--upper); letter-spacing: 0.06em; }
+
+/* ── medium + low ───────────────────────────────────────────────────────── */
+/* backdrop blur over a map that redraws every frame: replaced by an opaque panel */
+body:is([data-q="medium"], [data-q="low"]) :is(.scr, .modal-wrap) .panel {
+  backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--panel-solid);
+}
+/* glowing text: radar puts a 6px blur on every HUD glyph (inherited), holo on the stat values */
+body:is([data-q="medium"], [data-q="low"])[data-skin="radar"] :is(.hud, .scr, .modal-wrap, .ctxmenu, .toast) { text-shadow: none; }
+body:is([data-q="medium"], [data-q="low"])[data-skin="holo"] :is(.stat .val b, .ratio-val b) { text-shadow: none; }
+body:is([data-q="medium"], [data-q="low"])[data-skin] .btn.primary { box-shadow: none; }
+
+/* radar fx overlay: the rotating conic sweep (a ~260vmax layer, rasterised at device resolution) goes away —
+   medium draws it on the map canvas instead — and scanlines + vignette become a single layer */
+body:is([data-q="medium"], [data-q="low"])[data-skin="radar"] .fx-overlay {
+  background:
+    radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.6) 100%),
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 3px);
+}
+body:is([data-q="medium"], [data-q="low"])[data-skin="radar"] .fx-overlay::before,
+body:is([data-q="medium"], [data-q="low"])[data-skin="radar"] .fx-overlay::after { content: none; display: none; animation: none; }
+
+/* ── low only ───────────────────────────────────────────────────────────── */
+/* soft panel glows and big blurred shadows */
+body[data-q="low"][data-skin] { --shadow: none; --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.45); }
+body[data-q="low"][data-skin="orb"] { --shadow-lg: 0 4px 12px rgba(20, 22, 26, 0.16); }
+/* the vignette-only overlays of the other skins: one full-screen blended layer less per frame */
+body[data-q="low"]:is([data-skin="holo"], [data-skin="tat"], [data-skin="orb"]) .fx-overlay { display: none; }
+/* title logo blur filters */
+body[data-q="low"] .logo { filter: none; }
+/* pulsing full-screen alarm: keep it, without the infinite animation */
+body[data-q="low"] .alarm.on { animation: none; opacity: 0.6; }
+
+/* phones: keep the quality buttons apart so each stays an easy touch target */
+body.m-phone .pause-q .seg, body.m-phone .q-wrap .seg { gap: 6px; }

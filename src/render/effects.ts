@@ -24,6 +24,11 @@ export class Effects {
   theme: FxTheme = getSkin().fx;
   /** Advanced mode (fog): returns true for world points the human cannot see; their effects are dropped. */
   hidden: ((x: number, y: number) => boolean) | null = null;
+  /** Lower quality levels: fewer smoke puffs, flat smoke instead of a gradient. */
+  lite = false;
+
+  /** True while something is animating (effects alive or the screen shaking). */
+  get active(): boolean { return this.list.length > 0 || this.shakeAmp > 0; }
 
   blast(x: number, y: number, radius: number, hydrogen: boolean, now: number, onScreen: boolean): void {
     if (this.hidden && this.hidden(x, y)) return;
@@ -78,7 +83,7 @@ export class Effects {
         const rr = Math.max(6, R) * (0.6 + t * 1.6);
         c.globalAlpha = (1 - t) * 0.9;
         c.fillStyle = f.color;
-        for (let j = 0; j < 7; j++) {
+        for (let j = 0, n = this.lite ? 4 : 7; j < n; j++) {
           const a = j * 0.9 + f.t0 * 0.001;
           c.beginPath();
           c.arc(sx + Math.cos(a) * rr * 0.55, sy + Math.sin(a) * rr * 0.55, rr * (0.32 + 0.1 * Math.sin(j * 2.1)), 0, Math.PI * 2);
@@ -146,6 +151,13 @@ export class Effects {
     // lingering smoke disc
     const st = t;
     c.globalAlpha = Math.max(0, (1 - st)) * 0.45;
+    if (this.lite) {
+      c.globalAlpha *= 0.6;
+      c.fillStyle = rgba(th.smoke, 0.9);
+      c.beginPath(); c.arc(sx, sy - st * Rm * 0.3, Rm * (0.8 + st * 0.4), 0, Math.PI * 2); c.fill();
+      c.globalAlpha = 1;
+      return;
+    }
     const sg = c.createRadialGradient(sx, sy, 0, sx, sy, Rm * 1.1);
     sg.addColorStop(0, rgba(th.smoke, 0.9));
     sg.addColorStop(0.6, rgba(th.smoke, 0.5));

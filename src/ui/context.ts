@@ -91,7 +91,7 @@ export class ContextMenu {
       const r = row(icon, label, { hint, sub: true });
       r.appendChild(h('span', { class: 'cm-arrow' }, '▸'));
       r.appendChild(box);
-      r.addEventListener('click', e => { if (!(e.target as HTMLElement).closest('.cm-build')) { r.classList.toggle('opened'); this.place(); } });
+      r.addEventListener('click', e => { if (!(e.target as HTMLElement).closest('.cm-build')) this.toggleSub(r); });
       return box;
     };
     const g2 = g.adv;
@@ -153,7 +153,7 @@ export class ContextMenu {
       const r = row('▦', 'Costruisci', { hint: 'Strutture su questa casella', sub: true });
       r.appendChild(h('span', { class: 'cm-arrow' }, '▸'));
       r.appendChild(sub);
-      r.addEventListener('click', e => { if (!(e.target as HTMLElement).closest('.cm-build')) { r.classList.toggle('opened'); this.place(); } });
+      r.addEventListener('click', e => { if (!(e.target as HTMLElement).closest('.cm-build')) this.toggleSub(r); });
 
       if (advMe && g2) {
         const aa = this.adv!;
@@ -254,7 +254,10 @@ export class ContextMenu {
       row('✦', 'Dottrine', { into: box, key: 'R', onClick: run(() => aa.openDoctrines()) });
     }
 
-    const el = h('div', { class: 'ctxmenu' }, head, h('div', { class: 'cm-list' }, items));
+    // phones: a long menu goes into two columns so it fits the short screen without scrolling
+    const rows = items.filter(i => !i.classList.contains('cm-sep')).length;
+    const two = document.body.classList.contains('m-phone') && rows > 5 && window.innerWidth >= 480;
+    const el = h('div', { class: `ctxmenu${two ? ' two' : ''}` }, head, h('div', { class: 'cm-list' }, items));
     el.addEventListener('click', this.guardClick, true);
     this.host.appendChild(el);
     this.el = el;
@@ -263,6 +266,13 @@ export class ContextMenu {
     this.place();
     requestAnimationFrame(() => el.classList.add('in'));
     setTimeout(() => window.addEventListener('pointerdown', this.onDown, true), 0);
+  }
+
+  /** Open / close a nested list; on phones an open list widens the menu so it fits without scrolling. */
+  private toggleSub(r: HTMLElement): void {
+    r.classList.toggle('opened');
+    if (this.el && r.classList.contains('opened') && document.body.classList.contains('m-phone') && window.innerWidth >= 480) this.el.classList.add('two');
+    this.place();
   }
 
   /** Keep the menu inside the visible (safe-area) viewport; it scrolls when taller than the screen. */
